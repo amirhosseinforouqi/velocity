@@ -1,0 +1,30 @@
+{
+  "name": "mortgage-client-platform",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A simple, secure mortgage client management platform: broker portal + client portal, document collection, chat, stages, tasks and reminders.",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "doctor": "node scripts/doctor.js",
+    "code": "node scripts/code.js",
+    "dev": "node --watch server/index.js",
+    "migrate": "node scripts/migrate.js",
+    "keygen": "node scripts/keygen.js",
+    "backup": "node scripts/backup.js",
+    "restore": "node scripts/restore.js",
+    "encrypt:backfill": "node scripts/encrypt-backfill.js",
+    "jobs": "node scripts/run-jobs.js",
+    "seed:demo": "node scripts/seed-demo.js",
+    "reset:broker-only": "node scripts/reset-broker-only.js",
+    "test:email": "node scripts/send-test-email.js",
+    "verify:build": "node scripts/verify-build.js",
+    "test": "node --test tests/*.test.js"
+  },
+  "dependencies": {
+    "pg": "^8.23.0"
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "name": "Mortgage Client Platform",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "app",
+  "workspaceFolder": "/workspaces/mortgage-client-platform",
+  "forwardPorts": [3000],
+  "portsAttributes": {
+    "3000": {
+      "label": "Mortgage Client Platform",
+      "onAutoForward": "openPreview",
+      // Demo environment only. A forwarded port defaults to Private, and
+      // GitHub's proxy then answers 401 for any browser that is not signed
+      // in to this codespace — which looks like the app is broken. Public
+      // means "anyone with this unguessable URL reaches the sign-in page";
+      // it does not expose data, because every endpoint is still behind
+      // authentication. Do not copy this into a real deployment.
+      "visibility": "public"
+    }
+  },
+  "postCreateCommand": "bash .devcontainer/setup.sh",
+  "postStartCommand": "bash .devcontainer/start.sh",
+  // Also start on attach. postStartCommand runs once when the container
+  // starts, and anything it leaves behind can be cleaned up with it; running
+  // again when someone opens the codespace makes the app present whenever a
+  // person is actually looking at it. start.sh exits immediately if the
+  // server is already up, so this is free.
+  "postAttachCommand": "bash .devcontainer/start.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": ["dbaeumer.vscode-eslint"],
+      "settings": {
+        "files.exclude": { "data": true }
+      }
+    },
+    "codespaces": {
+      "openFiles": ["README.md"]
+    }
+  }
+}
