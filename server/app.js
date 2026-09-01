@@ -22,6 +22,7 @@ const sentry = require('./sentry');
 const router = new Router();
 require('./routes/auth.routes').register(router);
 require('./routes/broker.routes').register(router);
+require('./routes/deal.routes').register(router);
 require('./routes/client.routes').register(router);
 require('./routes/settings.routes').register(router);
 require('./routes/ops.routes').register(router);

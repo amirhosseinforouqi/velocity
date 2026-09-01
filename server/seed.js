@@ -23,12 +23,21 @@ const ALL_PERMISSIONS = [
   'audit.view',
   'settings.manage',
   'users.manage',
+  // Deal module. Financial and AML data are separated from general client
+  // access on purpose: an assistant who books appointments has no business
+  // reading a client's liabilities or their PEP declaration.
+  'financials.view',
+  'financials.edit',
+  'aml.view',
+  'aml.manage',
+  'lenders.view',
+  'lenders.manage',
 ];
 
 const DEFAULT_ROLE_PERMISSIONS = {
   admin: ALL_PERMISSIONS,
   manager: ALL_PERMISSIONS.filter((p) => p !== 'settings.manage'),
-  broker: ALL_PERMISSIONS.filter((p) => !['settings.manage', 'users.manage', 'audit.view'].includes(p)),
+  broker: ALL_PERMISSIONS.filter((p) => !['settings.manage', 'users.manage', 'audit.view', 'lenders.manage'].includes(p)),
   processor: [
     'clients.view',
     'documents.view',
@@ -40,6 +49,9 @@ const DEFAULT_ROLE_PERMISSIONS = {
     'tasks.manage',
     'notes.manage',
     'emails.view',
+    'financials.view',
+    'aml.view',
+    'lenders.view',
   ],
   assistant: [
     'clients.view',
@@ -49,6 +61,22 @@ const DEFAULT_ROLE_PERMISSIONS = {
     'tasks.manage',
     'notes.manage',
     'emails.view',
+  ],
+};
+
+/**
+ * Permissions added after the first release.
+ *
+ * An existing brokerage has its role→permission map stored in settings, so a
+ * new permission key would otherwise be granted to nobody — including the
+ * administrator — and the feature would look broken rather than new. Each
+ * upgrade is applied once, recorded by name, and only ever grants what the
+ * defaults above say that role should have. It never takes anything away, so
+ * a brokerage that has deliberately tightened a role keeps its choice.
+ */
+const PERMISSION_UPGRADES = {
+  deal_module_v1: [
+    'financials.view', 'financials.edit', 'aml.view', 'aml.manage', 'lenders.view', 'lenders.manage',
   ],
 };
 
@@ -82,6 +110,18 @@ const DEFAULT_SETTINGS = {
     task_on_all_docs_uploaded: true,
     task_on_client_message: false,
     notify_all_staff_if_unassigned: true,
+    // Date-driven workflow rules create tasks freely. Letting them email a
+    // real client needs a deliberate decision, so it is off until switched on.
+    workflow_client_email: false,
+  },
+  // The stress test and the ratio guidelines the qualification engine judges
+  // a file against. Published figures move, so they are settings rather than
+  // constants in the code.
+  qualification: {
+    buffer_pct: 2.0,
+    floor_rate: 5.25,
+    gds_limit: 39,
+    tds_limit: 44,
   },
   uploads: {
     max_mb: 25,
@@ -515,7 +555,137 @@ async function seedIfNeeded() {
     }
   }
 
+  await seedLenders();
+  await seedWorkflowRules();
+  await applyPermissionUpgrades();
   await bootstrapAdmin();
+}
+
+/**
+ * A small, honest starter catalog.
+ *
+ * These are placeholder partner records with placeholder rates, not a live
+ * rate feed — a brokerage replaces them with its own lender panel. They exist
+ * so the product-matching screen has something to demonstrate against rather
+ * than opening onto an empty table.
+ */
+const LENDERS = [
+  {
+    name: 'Example Prime Trust', kind: 'prime',
+    products: [
+      ['3 Year Fixed — Standard', 4.59, 'fixed', 36, 300, 'any', 95, 600, 'ON,BC,AB,MB,SK,NS,NB,PE,NL', 'purchase,refinance,fthb,builder_purchase', 'owner_occupied,second_home', 120],
+      ['5 Year Fixed — Standard', 4.29, 'fixed', 60, 300, 'any', 95, 600, 'ON,BC,AB,MB,SK,NS,NB,PE,NL', 'purchase,refinance,fthb,builder_purchase', 'owner_occupied,second_home', 120],
+      ['5 Year Variable — Prime less', 4.95, 'variable', 60, 300, 'any', 80, 650, 'ON,BC,AB', 'purchase,refinance,fthb', 'owner_occupied', 90],
+    ],
+  },
+  {
+    name: 'Example Alternative Lending', kind: 'alternative',
+    products: [
+      ['1 Year Fixed — Alt A', 6.49, 'fixed', 12, 360, 'uninsurable', 80, 550, 'ON,BC,AB', 'purchase,refinance', 'owner_occupied,rental', 60],
+      ['2 Year Fixed — Business for Self', 6.19, 'fixed', 24, 360, 'uninsurable', 75, 550, 'ON,BC,AB', 'purchase,refinance,business_loan', 'owner_occupied,rental', 60],
+    ],
+  },
+];
+
+async function seedLenders() {
+  if (await get('SELECT id FROM lenders LIMIT 1')) return;
+  for (const [i, lender] of LENDERS.entries()) {
+    const row = await get(
+      `INSERT INTO lenders (name, kind, notes, active, sort, created_at, updated_at)
+       VALUES (?, ?, ?, 1, ?, ?, ?) RETURNING id`,
+      lender.name, lender.kind,
+      'Sample record — replace with your brokerage’s own lender panel and current rates.',
+      (i + 1) * 10, now(), now()
+    );
+    for (const [name, rate, rateType, term, amort, insurability, maxLtv, minScore, provinces, purposes, occupancy, hold] of lender.products) {
+      await run(
+        `INSERT INTO lender_products
+           (lender_id, name, rate, rate_type, term_months, max_amortization_months, compounding, insurability,
+            max_ltv, min_credit_score, eligible_provinces, eligible_purposes, eligible_occupancy, rate_hold_days,
+            notes, active, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'semi_annual', ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+        row.id, name, rate, rateType, term, amort, insurability, maxLtv, minScore,
+        provinces, purposes, occupancy, hold, 'Sample rate — not a live quote.', now(), now()
+      );
+    }
+  }
+}
+
+/**
+ * Starter automation. Every one of these creates a task for a human rather
+ * than emailing a client, because an automation engine that reaches real
+ * clients on its own should be something a brokerage switches on knowingly.
+ */
+const WORKFLOW_RULES = [
+  {
+    name: 'Chase the lender three days after submission',
+    trigger_field: 'submitted_at', offset_days: 3, offset_direction: 'after',
+    action: 'task', task_title: 'Follow up with the lender on {{file_number}}',
+    task_description: 'No decision yet three days after submission. Call the underwriter.',
+    task_priority: 'normal',
+  },
+  {
+    name: 'Conditions due in five days',
+    trigger_field: 'conditions_due_date', offset_days: 5, offset_direction: 'before',
+    action: 'task', task_title: 'Conditions due {{due_date}} on {{file_number}}',
+    task_description: 'Check every outstanding condition and chase what is missing.',
+    task_priority: 'high',
+  },
+  {
+    name: 'Two weeks before closing',
+    trigger_field: 'closing_date', offset_days: 14, offset_direction: 'before',
+    action: 'task', task_title: 'Pre-closing check on {{file_number}}',
+    task_description: 'Confirm the solicitor has instructions, insurance is in place and the client knows what to expect.',
+    task_priority: 'high',
+  },
+  {
+    name: 'Rate hold expires in ten days',
+    trigger_field: 'rate_hold_expires_at', offset_days: 10, offset_direction: 'before',
+    action: 'task', task_title: 'Rate hold expiring on {{file_number}}',
+    task_description: 'Re-price or extend the hold before it lapses.',
+    task_priority: 'high',
+  },
+  {
+    name: 'Renewal conversation, 150 days before maturity',
+    trigger_field: 'maturity_date', offset_days: 150, offset_direction: 'before',
+    action: 'task', task_title: 'Start the renewal conversation for {{file_number}}',
+    task_description: 'Maturity is approaching. Reach out before the incumbent lender does.',
+    task_priority: 'normal',
+  },
+];
+
+async function seedWorkflowRules() {
+  if (await get('SELECT id FROM workflow_rules LIMIT 1')) return;
+  for (const rule of WORKFLOW_RULES) {
+    await run(
+      `INSERT INTO workflow_rules
+         (name, active, stage_key, trigger_field, offset_days, offset_direction, action,
+          task_title, task_description, task_priority, assignee, created_at, updated_at)
+       VALUES (?, 1, '', ?, ?, ?, ?, ?, ?, ?, 'assigned_broker', ?, ?)`,
+      rule.name, rule.trigger_field, rule.offset_days, rule.offset_direction, rule.action,
+      rule.task_title, rule.task_description, rule.task_priority, now(), now()
+    );
+  }
+}
+
+async function applyPermissionUpgrades() {
+  const applied = await getSetting('permission_upgrades', []);
+  const pending = Object.entries(PERMISSION_UPGRADES).filter(([name]) => !applied.includes(name));
+  if (!pending.length) return;
+
+  const stored = await getSetting('role_permissions', DEFAULT_ROLE_PERMISSIONS);
+  const next = { ...stored };
+  for (const [, keys] of pending) {
+    for (const role of Object.keys(DEFAULT_ROLE_PERMISSIONS)) {
+      const current = new Set(next[role] || DEFAULT_ROLE_PERMISSIONS[role] || []);
+      for (const key of keys) {
+        if ((DEFAULT_ROLE_PERMISSIONS[role] || []).includes(key)) current.add(key);
+      }
+      next[role] = [...current];
+    }
+  }
+  await setSetting('role_permissions', next);
+  await setSetting('permission_upgrades', [...applied, ...pending.map(([name]) => name)]);
 }
 
 /**
@@ -571,7 +741,9 @@ async function bootstrapAdmin() {
 module.exports = {
   seedIfNeeded,
   bootstrapAdmin,
+  applyPermissionUpgrades,
   ALL_PERMISSIONS,
   DEFAULT_ROLE_PERMISSIONS,
+  PERMISSION_UPGRADES,
   DEFAULT_EMAIL_TEMPLATES: EMAIL_TEMPLATES,
 };

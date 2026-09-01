@@ -16,7 +16,7 @@ const manageUsers = requirePermission('users.manage');
 
 const EDITABLE_CONFIG_KEYS = [
   'brokerage', 'client_steps', 'reminders', 'automation', 'uploads', 'security', 'retention',
-  'role_permissions', 'notifications', 'ai_review',
+  'role_permissions', 'notifications', 'ai_review', 'qualification',
 ];
 
 /** Route params are user input: reject non-numeric ids as 404, never 500. */
@@ -93,6 +93,29 @@ function validateConfig(key, value) {
     return out;
   }
 
+  if (key === 'qualification') {
+    // These numbers decide whether a client is told they qualify, so a typo
+    // here is not a cosmetic problem. Each is bounded to a range that is
+    // plausible as policy rather than merely parseable as a number.
+    const out = { ...value };
+    const bounded = (field, min, max) => {
+      if (out[field] === undefined) return;
+      const x = Number(out[field]);
+      if (!Number.isFinite(x) || x < min || x > max) {
+        throw new ApiError(400, `"${field}" must be a number between ${min} and ${max}.`, 'bad_value');
+      }
+      out[field] = x;
+    };
+    bounded('buffer_pct', 0, 10);
+    bounded('floor_rate', 0, 15);
+    bounded('gds_limit', 20, 60);
+    bounded('tds_limit', 20, 70);
+    if (out.gds_limit !== undefined && out.tds_limit !== undefined && out.gds_limit > out.tds_limit) {
+      throw new ApiError(400, 'The GDS limit cannot be higher than the TDS limit — TDS includes everything GDS does.', 'bad_value');
+    }
+    return out;
+  }
+
   if (key === 'ai_review') {
     return {
       ...value,
@@ -141,6 +164,8 @@ function register(router) {
     document_types: await all('SELECT * FROM document_types ORDER BY sort'),
     permissions: ALL_PERMISSIONS,
     staff_roles: STAFF_ROLES,
+    qualification: await getSetting('qualification', {}),
+    provinces: ['AB', 'BC', 'MB', 'NB', 'NL', 'NS', 'NT', 'NU', 'ON', 'PE', 'QC', 'SK', 'YT'],
     integrations: {
       email_transport: transportName(),
       microsoft_graph: require('../msgraph').isConfigured(),

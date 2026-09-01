@@ -235,6 +235,7 @@ async function maintenancePass() {
 
 const PASSES = [
   ['reminders', runReminderPass],
+  ['workflows', () => require('./workflows').runWorkflowPass()],
   ['expiry', runExpiryPass],
   ['overdue-tasks', overdueTaskPass],
   ['scan', scanPass],

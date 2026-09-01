@@ -2,8 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Broker Portal</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/shared.css">
   <link rel="stylesheet" href="/broker/broker.css">
 </head>
@@ -15,11 +16,18 @@
         <div class="brand-name" id="brand-name">Broker Portal</div>
       </div>
       <nav class="side-nav" aria-label="Main">
-        <a href="#/dashboard" data-nav="dashboard">📋 Dashboard</a>
-        <a href="#/clients" data-nav="clients">👥 Clients</a>
-        <a href="#/tasks" data-nav="tasks">✅ Tasks</a>
-        <a href="#/reports" data-nav="reports">📈 Reports</a>
-        <a href="#/settings" data-nav="settings" id="nav-settings">⚙️ Settings</a>
+        <a href="#/dashboard" data-nav="dashboard"><span class="ic" aria-hidden="true">◈</span><span class="label">Dashboard</span></a>
+        <a href="#/pipeline" data-nav="pipeline"><span class="ic" aria-hidden="true">▤</span><span class="label">Pipeline</span></a>
+        <a href="#/clients" data-nav="clients"><span class="ic" aria-hidden="true">◉</span><span class="label">Clients</span></a>
+        <a href="#/tasks" data-nav="tasks"><span class="ic" aria-hidden="true">✓</span><span class="label">Tasks</span></a>
+
+        <div class="group">Rates &amp; insight</div>
+        <a href="#/lenders" data-nav="lenders" id="nav-lenders"><span class="ic" aria-hidden="true">▩</span><span class="label">Lenders</span></a>
+        <a href="#/reports" data-nav="reports" id="nav-reports"><span class="ic" aria-hidden="true">▧</span><span class="label">Reports</span></a>
+
+        <div class="group">Brokerage</div>
+        <a href="#/automation" data-nav="automation" id="nav-automation"><span class="ic" aria-hidden="true">⟳</span><span class="label">Automation</span></a>
+        <a href="#/settings" data-nav="settings" id="nav-settings"><span class="ic" aria-hidden="true">⚙</span><span class="label">Settings</span></a>
       </nav>
       <div class="side-footer">
         <div class="small" id="side-user"></div>
@@ -29,9 +37,9 @@
 
     <div class="main">
       <header class="topbar">
-        <button class="icon-btn menu-btn" id="menu-btn" aria-label="Menu">☰</button>
+        <button class="icon-btn menu-btn" id="menu-btn" aria-label="Open menu">☰</button>
         <div class="search-wrap">
-          <input type="search" id="global-search" placeholder="Search clients, files, addresses…" aria-label="Search" autocomplete="off">
+          <input type="search" id="global-search" placeholder="Search clients, files, tasks, notes…" aria-label="Search" autocomplete="off">
           <div class="search-results hidden" id="search-results"></div>
         </div>
         <div class="spacer"></div>
@@ -42,8 +50,18 @@
     </div>
   </div>
 
+  <nav class="bottom-nav" aria-label="Primary">
+    <a href="#/dashboard" data-nav="dashboard"><span class="ic" aria-hidden="true">◈</span>Today</a>
+    <a href="#/pipeline" data-nav="pipeline"><span class="ic" aria-hidden="true">▤</span>Pipeline</a>
+    <a href="#/clients" data-nav="clients"><span class="ic" aria-hidden="true">◉</span>Clients</a>
+    <a href="#/tasks" data-nav="tasks"><span class="ic" aria-hidden="true">✓</span>Tasks</a>
+    <a href="#/clients/new" data-nav="new"><span class="ic" aria-hidden="true">＋</span>New</a>
+  </nav>
+
   <script src="/app-common.js"></script>
   <script src="/broker/broker-file.js"></script>
+  <script src="/broker/broker-deal.js"></script>
+  <script src="/broker/broker-lenders.js"></script>
   <script src="/broker/broker-settings.js"></script>
   <script src="/broker/broker.js"></script>
 </body>

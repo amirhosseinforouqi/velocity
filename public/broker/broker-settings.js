@@ -10,6 +10,7 @@ const SETTINGS_SECTIONS = [
   ['doctypes', 'Document catalog'],
   ['rules', 'Document rules'],
   ['templates', 'Email templates'],
+  ['qualification', 'Qualification policy'],
   ['automation', 'Reminders & automation'],
   ['team', 'Team & permissions'],
   ['consents', 'Consent forms'],
@@ -37,6 +38,7 @@ async function renderSettings(section) {
     branding: renderBrandingSettings, stages: renderStageSettings, types: renderTypeSettings,
     employment: renderEmploymentSettings, doctypes: renderDocTypeSettings,
     rules: renderRuleSettings, templates: renderTemplateSettings,
+    qualification: renderQualificationSettings,
     automation: renderAutomationSettings, team: renderTeamSettings, consents: renderConsentSettings,
     integrations: renderIntegrationsSettings,
   };
@@ -570,6 +572,7 @@ async function renderAutomationSettings(body) {
   const minHours = el('input', { type: 'number', value: reminders.min_hours_between ?? 24 });
   const taskOnDocs = el('input', { type: 'checkbox', checked: automation.task_on_all_docs_uploaded !== false ? '' : undefined });
   const notifyAll = el('input', { type: 'checkbox', checked: automation.notify_all_staff_if_unassigned !== false ? '' : undefined });
+  const workflowEmail = el('input', { type: 'checkbox', checked: automation.workflow_client_email === true ? '' : undefined });
 
   body.append(
     el('div', { class: 'card' },
@@ -602,20 +605,93 @@ async function renderAutomationSettings(body) {
       el('h3', null, 'Automation'),
       el('label', { class: 'checkbox' }, taskOnDocs, 'Create a "Review document package" task when every required document is in'),
       el('label', { class: 'checkbox' }, notifyAll, 'Notify all staff when an unassigned file needs attention'),
-      el('p', { class: 'faint' }, 'Per-stage automation (emails and tasks on stage entry) is configured on each stage under Settings → Stages.'),
+      el('div', { class: 'section-title' }, 'Date-driven workflow rules'),
+      el('div', { class: 'help-text' },
+        el('strong', null, 'Workflow rules create tasks for a person by default. '),
+        'Letting them email clients directly means a real client on a real mortgage file receives a message nobody read first. Turn it on only when you have reviewed every rule that uses it.'),
+      el('label', { class: 'checkbox' }, workflowEmail,
+        el('span', null, 'Allow workflow rules to email clients automatically')),
+      el('p', { class: 'faint' }, 'Per-stage automation (emails and tasks on stage entry) is configured on each stage under Settings → Stages. Date-driven rules live under Automation in the sidebar.'),
       el('button', {
         class: 'btn',
         onclick: async (e) => {
           e.target.disabled = true;
           try {
             await api.put('/api/settings/config/automation', {
-              value: { ...automation, task_on_all_docs_uploaded: taskOnDocs.checked, notify_all_staff_if_unassigned: notifyAll.checked },
+              value: {
+                ...automation,
+                task_on_all_docs_uploaded: taskOnDocs.checked,
+                notify_all_staff_if_unassigned: notifyAll.checked,
+                workflow_client_email: workflowEmail.checked,
+              },
             });
             toast('Automation saved.', 'good');
           } catch (err) { toast(err.message, 'bad'); }
           e.target.disabled = false;
         },
       }, 'Save automation')));
+}
+
+// ------------------------------------------------------------------ qualification policy
+
+/**
+ * The stress test and the ratio guidelines.
+ *
+ * These are settings rather than constants because the published figures move
+ * — the qualifying-rate floor has changed more than once — and a brokerage
+ * placing alternative business works to different GDS/TDS limits than one
+ * placing prime. Every file's ratios are recalculated against whatever is
+ * saved here the next time they are read; nothing is cached.
+ */
+async function renderQualificationSettings(body) {
+  const current = (await api.get('/api/settings/config/qualification')).value || {};
+  const buffer = el('input', { type: 'number', step: '0.05', class: 'rate', value: current.buffer_pct ?? 2 });
+  const floor = el('input', { type: 'number', step: '0.05', class: 'rate', value: current.floor_rate ?? 5.25 });
+  const gds = el('input', { type: 'number', step: '0.5', class: 'rate', value: current.gds_limit ?? 39 });
+  const tds = el('input', { type: 'number', step: '0.5', class: 'rate', value: current.tds_limit ?? 44 });
+  const example = el('p', { class: 'faint' });
+
+  const updateExample = () => {
+    const rate = 4.29;
+    const qualifying = Math.max(rate + (Number(buffer.value) || 0), Number(floor.value) || 0);
+    example.textContent = `With these settings, a file at a ${rate}% contract rate qualifies at ${qualifying.toFixed(2)}%.`;
+  };
+  buffer.addEventListener('input', updateExample);
+  floor.addEventListener('input', updateExample);
+  updateExample();
+
+  body.append(el('div', { class: 'card' },
+    el('h3', null, 'Stress test'),
+    el('div', { class: 'help-text' },
+      el('strong', null, 'The qualifying rate is the greater of the two. '),
+      'Every GDS and TDS figure in the platform is calculated at this rate, not the contract rate, because that is the test a lender applies. The contract-rate equivalents are shown beside them so you can explain the gap to a client.'),
+    el('div', { class: 'form-row cols-2' },
+      el('label', { class: 'field' }, el('span', null, 'Added to the contract rate (%)'), buffer),
+      el('label', { class: 'field' }, el('span', null, 'Minimum qualifying rate (%)'), floor)),
+    example,
+    el('div', { class: 'section-title' }, 'Ratio guidelines'),
+    el('p', { class: 'faint' }, 'A file over these is flagged, not blocked — exceptions are a normal part of placing business, and the platform’s job is to make sure you noticed.'),
+    el('div', { class: 'form-row cols-2' },
+      el('label', { class: 'field' }, el('span', null, 'GDS limit (%)'), gds),
+      el('label', { class: 'field' }, el('span', null, 'TDS limit (%)'), tds)),
+    el('button', {
+      class: 'btn',
+      onclick: async (e) => {
+        e.target.disabled = true;
+        try {
+          await api.put('/api/settings/config/qualification', {
+            value: {
+              buffer_pct: Number(buffer.value),
+              floor_rate: Number(floor.value),
+              gds_limit: Number(gds.value),
+              tds_limit: Number(tds.value),
+            },
+          });
+          toast('Qualification policy saved. Every file recalculates against it.', 'good');
+        } catch (err) { toast(err.message, 'bad'); }
+        e.target.disabled = false;
+      },
+    }, 'Save policy')));
 }
 
 // ------------------------------------------------------------------ team & permissions

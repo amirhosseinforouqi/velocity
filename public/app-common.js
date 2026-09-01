@@ -69,6 +69,21 @@ function clearNode(node) {
   while (node.firstChild) node.removeChild(node.firstChild);
 }
 
+/**
+ * Append children, skipping the ones that are not there.
+ *
+ * `Element.append(null)` does not skip — it inserts the literal text "null".
+ * Every render here builds lists with `condition ? el(...) : null`, so the
+ * top-level append needs the same filtering `el()` already does internally.
+ */
+function mount(parent, ...children) {
+  for (const child of children.flat(Infinity)) {
+    if (child === null || child === undefined || child === false) continue;
+    parent.append(child.nodeType ? child : document.createTextNode(String(child)));
+  }
+  return parent;
+}
+
 function fmtMoney(n) {
   if (n === null || n === undefined || n === '') return '—';
   return new Intl.NumberFormat('en-CA', { style: 'currency', currency: 'CAD', maximumFractionDigits: 0 }).format(n);

@@ -42,6 +42,15 @@ function applicantSummary(a) {
     has_portal_access: !!a.portal_user_id,
     portal_user_id: a.portal_user_id,
     shares_documents: a.shares_documents === 1,
+    language: a.language,
+    marital_status: a.marital_status,
+    dependents: a.dependents,
+    credit_score: a.credit_score,
+    credit_bureau: a.credit_bureau,
+    credit_pulled_at: a.credit_pulled_at,
+    casl_consent: a.casl_consent === 1,
+    casl_consent_at: a.casl_consent_at,
+    casl_consent_source: a.casl_consent_source,
   };
 }
 
@@ -139,6 +148,22 @@ async function requestFull(requestId, { includeInternal = false, canDownload = f
 
   if (includeInternal) {
     const { reviewForVersion } = require('./ai-review');
+    // Dimensions that sit alongside the lifecycle status rather than inside
+    // it: a document can be received AND still not sent to the lender, and a
+    // lender condition is a different thing from a compliance form even when
+    // both are "approved".
+    base.flags = {
+      condition: r.is_condition === 1,
+      compliance: r.is_compliance === 1,
+      esign_required: r.esign_required === 1,
+      esign_completed: !!r.esign_completed_at,
+      received: ['uploaded', 'under_review', 'approved'].includes(r.status),
+      approved: r.status === 'approved',
+      sent_to_lender: !!r.sent_to_lender_at,
+    };
+    base.sent_to_lender_at = r.sent_to_lender_at;
+    base.esign_completed_at = r.esign_completed_at;
+    base.lender_reference = r.lender_reference;
     base.internal_note = r.internal_note;
     base.source = r.source;
     base.reminders_enabled = r.reminders_enabled;

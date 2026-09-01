@@ -2,8 +2,9 @@
 
 /* Broker portal SPA — main router and top-level views.
    Routes:
-     #/dashboard  #/clients  #/clients/new  #/files/:id[/:tab]
-     #/tasks  #/reports  #/notifications  #/settings[/:section]      */
+     #/dashboard  #/pipeline  #/clients  #/clients/new  #/files/:id[/:tab]
+     #/tasks  #/lenders  #/reports  #/automation
+     #/notifications  #/settings[/:section]                          */
 
 const view = document.getElementById('view');
 
@@ -47,10 +48,19 @@ async function boot() {
     }
   });
   document.getElementById('notif-btn').addEventListener('click', () => { window.location.hash = '#/notifications'; });
+  // Navigation only offers what this role can actually reach. A destination
+  // that answers with a permission error is worse than one that is not there.
   if (!can('settings.manage') && !can('users.manage')) {
     document.getElementById('nav-settings').classList.add('hidden');
   }
-  if (!can('clients.create')) document.getElementById('new-client-btn').classList.add('hidden');
+  if (!can('lenders.view')) document.getElementById('nav-lenders').classList.add('hidden');
+  if (!can('reports.view')) document.getElementById('nav-reports').classList.add('hidden');
+  if (!can('settings.manage')) document.getElementById('nav-automation').classList.add('hidden');
+  if (!can('clients.create')) {
+    document.getElementById('new-client-btn').classList.add('hidden');
+    const mobileNew = document.querySelector('.bottom-nav a[data-nav="new"]');
+    if (mobileNew) mobileNew.classList.add('hidden');
+  }
 
   setupGlobalSearch();
   updateNotifBadge();
@@ -73,18 +83,31 @@ async function updateNotifBadge() {
 
 function route() {
   const hash = window.location.hash || '#/dashboard';
-  const parts = hash.slice(2).split('/');
-  document.querySelectorAll('.side-nav a').forEach((a) => {
-    a.classList.toggle('active', hash.startsWith('#/' + a.dataset.nav) || (a.dataset.nav === 'clients' && parts[0] === 'files'));
+  // Strip the query before splitting the path. Without this, "#/clients?filter=x"
+  // parses as a single segment that matches no route and silently lands on the
+  // dashboard — which is exactly where every filtered link from a stat tile
+  // used to end up.
+  const parts = hash.slice(2).split('?')[0].split('/');
+  const isFile = parts[0] === 'files';
+  document.querySelectorAll('.side-nav a, .bottom-nav a').forEach((a) => {
+    const active = parts[0] === a.dataset.nav || (a.dataset.nav === 'clients' && isFile);
+    a.classList.toggle('active', active && a.dataset.nav !== 'new');
   });
   document.getElementById('sidebar').classList.remove('open');
   if (typeof stopBrokerChat === 'function') stopBrokerChat();
+  // A different file means the cached deal payload is stale.
+  if (isFile && DEAL.fileId && DEAL.fileId !== Number(parts[1])) {
+    DEAL.fileId = null; DEAL.data = null; DEAL.requestId = null; DEAL.amlData = null;
+  }
 
   if (parts[0] === 'clients' && parts[1] === 'new') renderNewClient();
   else if (parts[0] === 'clients') renderClients();
   else if (parts[0] === 'files' && parts[1]) renderFileView(Number(parts[1]), parts[2]);
+  else if (parts[0] === 'pipeline') renderPipeline();
   else if (parts[0] === 'tasks') renderTasksPage();
+  else if (parts[0] === 'lenders') renderLenders();
   else if (parts[0] === 'reports') renderReports();
+  else if (parts[0] === 'automation') renderAutomation();
   else if (parts[0] === 'notifications') renderNotificationsPage();
   else if (parts[0] === 'settings') renderSettings(parts[1]);
   else renderDashboard();
@@ -98,61 +121,138 @@ function setView(...nodes) {
 
 // ------------------------------------------------------------------ global search
 
+/**
+ * Global search.
+ *
+ * Types beyond client files are fetched only when the box is opened wide
+ * (two characters is a type-ahead; the full search is a deliberate act), and
+ * each extra type is permission-checked server-side — finding a note you are
+ * not allowed to read is still reading it.
+ */
 function setupGlobalSearch() {
   const input = document.getElementById('global-search');
   const results = document.getElementById('search-results');
+
+  const group = (label, items, render) => {
+    if (!items || !items.length) return null;
+    return el('div', null,
+      el('div', { class: 'group-label' }, label),
+      items.map(render));
+  };
+
   const run = debounce(async () => {
     const q = input.value.trim();
     if (q.length < 2) { results.classList.add('hidden'); return; }
     try {
-      const res = await api.get(`/api/broker/search?q=${encodeURIComponent(q)}`);
+      const res = await api.get(`/api/broker/search?q=${encodeURIComponent(q)}&scope=all`);
       clearNode(results);
-      if (res.results.length === 0) {
-        results.append(el('div', { class: 'item muted' }, 'No matching clients found.'));
+      const total = Object.values(res.counts || {}).reduce((a, b) => a + b, 0);
+      if (total === 0) {
+        results.append(el('div', { class: 'item muted' }, `Nothing matches “${q}”.`));
       }
-      for (const f of res.results) {
-        results.append(el('div', {
+      mount(results,
+        group('Clients', res.results, (f) => el('div', {
           class: 'item',
           onclick: () => { results.classList.add('hidden'); input.value = ''; goFile(f.id); },
         },
           el('div', { class: 'row' },
             el('span', { style: 'font-weight:600' }, f.client_name),
-            stageDot(f.stage), el('span', { class: 'faint' }, f.file_number)),
-          f.property_address ? el('div', { class: 'faint' }, f.property_address) : null));
-      }
+            stageDot(f.stage), el('span', { class: 'faint mono' }, f.file_number)),
+          f.property_address ? el('div', { class: 'faint' }, f.property_address) : null)),
+
+        group('Documents', res.documents, (d) => el('div', {
+          class: 'item',
+          onclick: () => { results.classList.add('hidden'); input.value = ''; goFile(d.file_id, 'documents'); },
+        },
+          el('div', { class: 'row' },
+            el('span', { style: 'font-weight:600' }, d.document_name),
+            el('span', { class: `pill ${brokerDocPill(d.status).cls}` }, brokerDocPill(d.status).label)),
+          el('div', { class: 'faint mono' }, d.file_number))),
+
+        group('Tasks', res.tasks, (t) => el('div', {
+          class: 'item',
+          onclick: () => { results.classList.add('hidden'); input.value = ''; if (t.file_id) goFile(t.file_id, 'tasks'); else window.location.hash = '#/tasks'; },
+        },
+          el('div', { style: 'font-weight:600' }, t.title),
+          el('div', { class: 'faint' }, [t.file_number, t.due_date ? `due ${fmtDate(t.due_date)}` : null].filter(Boolean).join(' · ')))),
+
+        group('Notes', res.notes, (n) => el('div', {
+          class: 'item',
+          onclick: () => { results.classList.add('hidden'); input.value = ''; goFile(n.file_id, 'notes'); },
+        },
+          el('div', null, n.body.length > 110 ? n.body.slice(0, 110) + '…' : n.body),
+          el('div', { class: 'faint mono' }, n.file_number))));
       results.classList.remove('hidden');
-    } catch { /* ignore */ }
+    } catch { /* a failed search should not break the page */ }
   }, 250);
+
   input.addEventListener('input', run);
   input.addEventListener('focus', run);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { results.classList.add('hidden'); input.blur(); }
+  });
   document.addEventListener('click', (e) => {
     if (!results.contains(e.target) && e.target !== input) results.classList.add('hidden');
+  });
+  // "/" focuses search from anywhere, the convention in every tool a broker
+  // already uses — but never while they are typing into something else.
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== '/' || e.metaKey || e.ctrlKey) return;
+    const tag = (e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+    e.preventDefault();
+    input.focus();
   });
 }
 
 // ------------------------------------------------------------------ dashboard
 
+/**
+ * The dashboard answers one question — what needs my attention right now? —
+ * and it has to answer it in the first screenful. So the order is: the
+ * numbers that represent work, then the ranked list of files behind those
+ * numbers, then the pipeline shape, then everything else.
+ *
+ * Every tile is a link into exactly the records it counts. A number a broker
+ * cannot click through to is trivia.
+ */
 async function renderDashboard() {
-  setView(el('div', { class: 'card' }, el('div', { class: 'skeleton', style: 'height:160px' })));
+  setView(
+    el('div', { class: 'stat-grid' }, Array.from({ length: 6 }, () => el('div', { class: 'skeleton', style: 'height:78px' }))),
+    el('div', { class: 'card' }, el('div', { class: 'skeleton', style: 'height:180px' })));
+
   const mineOnly = localStorage.getItem('dash_mine') === '1';
-  const d = await api.get(`/api/broker/dashboard${mineOnly ? '?mine=1' : ''}`);
+  const [d, pipeline] = await Promise.all([
+    api.get(`/api/broker/dashboard${mineOnly ? '?mine=1' : ''}`),
+    api.get(`/api/broker/pipeline?limit=5${mineOnly ? '&mine=1' : ''}`).catch(() => null),
+  ]);
 
-  const stat = (n, label, cls, onclick) => el('button', { class: `stat ${cls || ''}`, onclick },
-    el('div', { class: 'n' }, String(n)), el('div', { class: 'lbl' }, label));
+  const stat = (n, label, sub, cls, onclick) => el('button', {
+    class: `stat ${cls || ''} ${onclick ? '' : 'static'}`, onclick: onclick || undefined,
+  },
+    el('div', { class: 'n' }, String(n)),
+    el('div', { class: 'lbl' }, label),
+    sub ? el('div', { class: 'sub' }, sub) : null);
 
-  const mineToggle = el('label', { class: 'checkbox', style: 'margin:0' },
-    el('input', {
-      type: 'checkbox', checked: mineOnly ? '' : undefined,
-      onchange: (e) => { localStorage.setItem('dash_mine', e.target.checked ? '1' : '0'); renderDashboard(); },
-    }), el('span', { class: 'small' }, 'My clients only'));
+  const scope = el('div', { class: 'segmented' },
+    [['0', 'Whole brokerage'], ['1', 'My clients']].map(([value, label]) =>
+      el('button', {
+        class: (mineOnly ? '1' : '0') === value ? 'active' : '',
+        onclick: () => { localStorage.setItem('dash_mine', value); renderDashboard(); },
+      }, label)));
+
+  const REASON_STYLE = {
+    review: ['info', '📥'], message: ['brand', '💬'], outstanding: ['warn', '📄'],
+    task_overdue: ['bad', '⏰'], task_today: ['warn', '📅'],
+  };
 
   const attentionList = d.attention.length === 0
     ? el('div', { class: 'card empty' },
         el('div', { class: 'big' }, '☕'),
-        el('h3', null, "You're all caught up"),
-        el('p', null, 'No clients need your attention right now.'))
-    : el('div', { class: 'card' },
-        el('ul', { class: 'list' }, d.attention.map((a) => el('li', {
+        el('h3', null, 'Nothing is waiting on you'),
+        el('p', null, 'No documents to review, no unread client messages, no overdue follow-ups. This is the state the reminders and automation are there to keep you in.'))
+    : el('div', { class: 'card flush' },
+        el('ul', { class: 'list', style: 'padding:4px 14px' }, d.attention.map((a) => el('li', {
           class: 'attention-item', role: 'button', tabindex: '0',
           onclick: () => goFile(a.file_id),
           onkeydown: (e) => { if (e.key === 'Enter') goFile(a.file_id); },
@@ -160,48 +260,232 @@ async function renderDashboard() {
           el('div', { class: 'row wrap' },
             el('span', { style: 'font-weight:700' }, a.client_name),
             stageDot(a.stage),
-            el('span', { class: 'faint' }, a.file_number)),
-          el('div', { class: 'reason-tags' }, a.reasons.map((r) => el('span', {
-            class: `pill ${{ review: 'info', message: 'brand', outstanding: 'warn', task_overdue: 'bad', task_today: 'warn' }[r.kind] || ''}`,
-          }, `${{ review: '📥', message: '💬', outstanding: '📄', task_overdue: '⏰', task_today: '📅' }[r.kind] || ''} ${r.text}${r.latest ? ' · ' + timeAgo(r.latest) : ''}`)))))));
+            el('span', { class: 'faint mono' }, a.file_number)),
+          el('div', { class: 'reason-tags' }, a.reasons.map((r) => {
+            const [cls, icon] = REASON_STYLE[r.kind] || ['', ''];
+            return el('span', { class: `pill ${cls}` }, `${icon} ${r.text}${r.latest ? ' · ' + timeAgo(r.latest) : ''}`);
+          }))))));
+
+  // The pipeline shape, as a single stacked bar: where the book actually sits
+  // right now, in one line, with the money attached.
+  const pipelineStrip = pipeline && pipeline.columns.length
+    ? (() => {
+        const live = pipeline.columns.filter((c) => c.total > 0);
+        const total = live.reduce((sum, c) => sum + c.total, 0);
+        const volume = live.reduce((sum, c) => sum + (c.volume || 0), 0);
+        if (!total) return null;
+        return el('div', { class: 'card' },
+          el('div', { class: 'card-title' },
+            el('h3', null, 'Pipeline'),
+            el('div', { class: 'spacer' }),
+            el('span', { class: 'faint mono' }, `${total} active · ${fmtMoney(volume)}`),
+            el('a', { class: 'btn-link small', href: '#/pipeline' }, 'Open board →')),
+          el('div', { class: 'row', style: 'height:12px;border-radius:99px;overflow:hidden;gap:2px;background:var(--bg-sunken)' },
+            live.map((c) => el('div', {
+              style: `flex:${c.total};background:${c.stage.color};height:100%`,
+              title: `${c.stage.name}: ${c.total}`,
+            }))),
+          el('div', { class: 'row wrap', style: 'margin-top:10px;gap:12px' },
+            live.map((c) => el('button', {
+              class: 'btn-link small', style: 'display:flex;align-items:center;gap:6px;color:var(--ink-soft)',
+              onclick: () => { window.location.hash = `#/clients?stage_id=${c.stage.id}`; },
+            },
+              el('span', { class: 'dot', style: `background:${c.stage.color}` }),
+              c.stage.name,
+              el('strong', null, String(c.total))))));
+      })()
+    : null;
 
   const taskCard = el('div', { class: 'card' },
     el('div', { class: 'card-title' },
-      el('h3', null, "Today's tasks & overdue"),
+      el('h3', null, 'Due today and overdue'),
       el('div', { class: 'spacer' }),
       el('a', { class: 'btn-link small', href: '#/tasks' }, 'All tasks →')),
     d.tasks.length === 0
-      ? el('p', { class: 'muted' }, 'Nothing due today. 🎉')
+      ? el('div', { class: 'empty', style: 'padding:20px' },
+          el('div', { class: 'big' }, '✓'),
+          el('p', null, 'Nothing due today.'))
       : el('ul', { class: 'list' }, d.tasks.map((t) => taskRow(t, renderDashboard))));
 
   const recentCard = el('div', { class: 'card' },
-    el('div', { class: 'card-title' }, el('h3', null, 'Recently active files')),
+    el('div', { class: 'card-title' }, el('h3', null, 'Recently active')),
     d.recent.length === 0
-      ? el('p', { class: 'muted' }, 'No files yet — create your first client to get started.')
+      ? el('div', { class: 'empty', style: 'padding:20px' },
+          el('div', { class: 'big' }, '◉'),
+          el('p', null, 'No files yet.'),
+          can('clients.create') ? el('a', { class: 'btn sm', href: '#/clients/new' }, 'Create your first client') : null)
       : el('ul', { class: 'list' }, d.recent.map((f) => el('li', {
           class: 'attention-item row wrap', role: 'button', tabindex: '0', onclick: () => goFile(f.id),
         },
           el('div', { class: 'grow' },
             el('div', { style: 'font-weight:600' }, f.client_name),
-            el('div', { class: 'faint' }, `${f.file_number} · ${f.application_type || ''} · updated ${timeAgo(f.last_activity_at || f.updated_at)}`)),
+            el('div', { class: 'faint' }, `${f.file_number} · ${f.application_type || 'no service set'} · ${timeAgo(f.last_activity_at || f.updated_at)}`)),
           stageDot(f.stage)))));
 
   setView(
-    el('div', { class: 'row', style: 'margin-bottom:14px' },
-      el('div', null,
+    el('div', { class: 'page-head' },
+      el('div', { class: 'grow' },
         el('h1', null, `${greeting()}, ${BK.me.user.first_name}.`),
-        el('p', { class: 'muted', style: 'margin:0' }, 'Here is what needs your attention.')),
-      el('div', { class: 'spacer' }), mineToggle),
+        el('p', { class: 'sub' }, d.attention.length
+          ? `${d.attention.length} file${d.attention.length === 1 ? '' : 's'} need something from you.`
+          : 'Nothing is waiting on you.')),
+      scope),
+
     el('div', { class: 'stat-grid' },
-      stat(d.cards.documents_awaiting_review, 'Documents to review', d.cards.documents_awaiting_review ? 'warm' : '', () => { window.location.hash = '#/clients?filter=awaiting_review'; }),
-      stat(d.cards.documents_outstanding_files, 'Files waiting on client docs', '', () => { window.location.hash = '#/clients?filter=outstanding_docs'; }),
-      stat(d.cards.unread_messages, 'Unread client messages', d.cards.unread_messages ? 'warm' : '', () => { window.location.hash = '#/clients?filter=unread_messages'; }),
-      stat(d.cards.tasks_today, 'Follow-ups due today', '', () => { window.location.hash = '#/tasks?filter=today'; }),
-      stat(d.cards.tasks_overdue, 'Overdue follow-ups', d.cards.tasks_overdue ? 'hot' : '', () => { window.location.hash = '#/tasks?filter=overdue'; }),
-      stat(d.cards.active_clients, 'Active clients', '', () => { window.location.hash = '#/clients'; })),
+      stat(d.cards.documents_awaiting_review, 'Documents to review', 'uploaded, not yet decided',
+        d.cards.documents_awaiting_review ? 'warm' : 'calm',
+        () => { window.location.hash = '#/clients?filter=awaiting_review'; }),
+      stat(d.cards.unread_messages, 'Unread messages', 'clients waiting on a reply',
+        d.cards.unread_messages ? 'warm' : 'calm',
+        () => { window.location.hash = '#/clients?filter=unread_messages'; }),
+      stat(d.cards.tasks_overdue, 'Overdue follow-ups', 'past their due date',
+        d.cards.tasks_overdue ? 'hot' : 'calm',
+        () => { window.location.hash = '#/tasks?filter=overdue'; }),
+      stat(d.cards.documents_outstanding_files, 'Waiting on clients', 'files with documents outstanding', '',
+        () => { window.location.hash = '#/clients?filter=outstanding_docs'; }),
+      stat(d.cards.tasks_today, 'Due today', 'follow-ups scheduled for today', '',
+        () => { window.location.hash = '#/tasks?filter=today'; }),
+      stat(d.cards.active_clients, 'Active files', 'in the pipeline', '',
+        () => { window.location.hash = '#/pipeline'; })),
+
     el('h2', null, 'Needs your attention'),
     attentionList,
+    pipelineStrip,
     el('div', { class: 'form-row cols-2', style: 'gap:16px' }, taskCard, recentCard));
+}
+
+// ------------------------------------------------------------------ pipeline board
+
+/**
+ * The pipeline as a board.
+ *
+ * A card is dragged between columns to move the file's stage, which fires the
+ * same server-side stage change (history, client notification, stage
+ * automation) as the dropdown does — a board that quietly skipped those side
+ * effects would be a second, wrong way to do the same thing.
+ *
+ * Each column loads a page of cards and reports its own true total, so a
+ * brokerage with two thousand active files still gets a board that renders.
+ */
+async function renderPipeline() {
+  const mineOnly = localStorage.getItem('pipe_mine') === '1';
+  setView(el('div', { class: 'card' }, el('div', { class: 'skeleton', style: 'height:360px' })));
+
+  let data;
+  try {
+    data = await api.get(`/api/broker/pipeline${mineOnly ? '?mine=1' : ''}`);
+  } catch (err) {
+    setView(el('div', { class: 'card empty' }, el('p', null, err.message)));
+    return;
+  }
+
+  const canMove = can('stage.change');
+  let dragging = null;
+
+  const card = (c, column) => {
+    const node = el('div', {
+      class: 'board-card', draggable: canMove ? 'true' : undefined, tabindex: '0',
+      onclick: () => goFile(c.id),
+      onkeydown: (e) => { if (e.key === 'Enter') goFile(c.id); },
+    },
+      el('div', { class: 'who' }, c.client_name),
+      el('div', { class: 'row', style: 'gap:6px' },
+        el('span', { class: 'amt' }, c.mortgage_amount ? fmtMoney(c.mortgage_amount) : '—'),
+        el('div', { class: 'spacer' }),
+        el('span', { class: 'meta mono' }, c.file_number)),
+      c.metrics && c.metrics.gds !== null
+        ? el('div', { class: 'row', style: 'gap:5px;margin-top:5px' },
+            el('span', { class: `pill ${c.metrics.gds_status === 'over' ? 'bad' : c.metrics.gds_status === 'near' ? 'warn' : 'good'}` }, `GDS ${fmtPct(c.metrics.gds, 0)}`),
+            el('span', { class: `pill ${c.metrics.tds_status === 'over' ? 'bad' : c.metrics.tds_status === 'near' ? 'warn' : 'good'}` }, `TDS ${fmtPct(c.metrics.tds, 0)}`),
+            c.metrics.ltv !== null ? el('span', { class: 'pill' }, `LTV ${fmtPct(c.metrics.ltv, 0)}`) : null)
+        : null,
+      el('div', { class: 'tags' },
+        c.to_review ? el('span', { class: 'pill info' }, `${c.to_review} to review`) : null,
+        c.outstanding ? el('span', { class: 'pill warn' }, `${c.outstanding} outstanding`) : null,
+        c.closing_date ? el('span', { class: 'pill' }, `Closes ${fmtDate(c.closing_date)}`) : null),
+      el('div', { class: 'meta', style: 'margin-top:5px' }, timeAgo(c.last_activity_at)));
+
+    if (canMove) {
+      node.addEventListener('dragstart', (e) => {
+        dragging = { card: c, from: column };
+        node.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        // Firefox will not start a drag without payload on the transfer.
+        e.dataTransfer.setData('text/plain', String(c.id));
+      });
+      node.addEventListener('dragend', () => { node.classList.remove('dragging'); dragging = null; });
+    }
+    return node;
+  };
+
+  const columns = data.columns.map((column) => {
+    const body = el('div', { class: 'board-col-body' },
+      column.cards.map((c) => card(c, column)),
+      column.total > column.cards.length
+        ? el('button', {
+            class: 'board-more btn-link',
+            onclick: () => { window.location.hash = `#/clients${column.stage.id ? `?stage_id=${column.stage.id}` : ''}`; },
+          }, `+ ${column.total - column.cards.length} more — open as a list`)
+        : null,
+      column.cards.length === 0
+        ? el('div', { class: 'board-more' }, 'Empty')
+        : null);
+
+    const col = el('div', { class: 'board-col' },
+      el('div', { class: 'board-col-head' },
+        el('span', { class: 'dot', style: `background:${column.stage.color}` }),
+        el('span', { class: 'name' }, column.stage.name),
+        el('span', { class: 'n' }, String(column.total))),
+      column.volume ? el('div', { class: 'board-volume', style: 'padding:0 6px 7px' }, fmtMoney(column.volume)) : null,
+      body);
+
+    if (canMove && column.stage.id) {
+      col.addEventListener('dragover', (e) => {
+        if (!dragging || dragging.from.stage.id === column.stage.id) return;
+        e.preventDefault();
+        col.classList.add('drop');
+      });
+      col.addEventListener('dragleave', () => col.classList.remove('drop'));
+      col.addEventListener('drop', async (e) => {
+        e.preventDefault();
+        col.classList.remove('drop');
+        if (!dragging || dragging.from.stage.id === column.stage.id) return;
+        const moved = dragging.card;
+        dragging = null;
+        try {
+          await api.post(`/api/broker/files/${moved.id}/stage`, { stage_id: column.stage.id });
+          toast(`${moved.client_name} moved to ${column.stage.name}.`, 'good');
+        } catch (err) {
+          toast(err.message, 'bad');
+        }
+        renderPipeline();
+      });
+    }
+    return col;
+  });
+
+  const anyCards = data.columns.some((c) => c.total > 0);
+
+  setView(
+    el('div', { class: 'page-head' },
+      el('div', { class: 'grow' },
+        el('h1', null, 'Pipeline'),
+        el('p', { class: 'sub' }, canMove
+          ? 'Drag a file between columns to move its stage — the same history, client notification and stage automation run either way.'
+          : 'Your role can view the pipeline but not change stages.')),
+      el('div', { class: 'segmented' },
+        [['0', 'Whole brokerage'], ['1', 'Mine']].map(([value, label]) =>
+          el('button', {
+            class: (mineOnly ? '1' : '0') === value ? 'active' : '',
+            onclick: () => { localStorage.setItem('pipe_mine', value); renderPipeline(); },
+          }, label)))),
+    anyCards
+      ? el('div', { class: 'board' }, columns)
+      : el('div', { class: 'card empty' },
+          el('div', { class: 'big' }, '▤'),
+          el('h3', null, 'The board is empty'),
+          el('p', null, 'Active files appear here grouped by stage, so you can see the shape of the book and move a file by dragging it.'),
+          can('clients.create') ? el('a', { class: 'btn', href: '#/clients/new' }, 'Create a client') : null));
 }
 
 // ------------------------------------------------------------------ clients list
@@ -292,22 +576,22 @@ async function renderClients() {
     const cb = el('input', { type: 'checkbox', 'aria-label': `Select ${c.client_name}`, onclick: (e) => e.stopPropagation() });
     cb.addEventListener('change', () => { cb.checked ? selected.add(c.id) : selected.delete(c.id); paintBulkBar(); });
     return el('tr', { class: 'clickable', onclick: () => goFile(c.id) },
-      el('td', null, cb),
-      el('td', null,
+      el('td', { class: 'select-cell' }, cb),
+      el('td', { 'data-label': 'Client' },
         el('div', { style: 'font-weight:600' }, c.client_name, c.applicant_count > 1 ? el('span', { class: 'faint' }, ` +${c.applicant_count - 1}`) : ''),
-        el('div', { class: 'faint' }, c.file_number)),
-      el('td', null, c.application_type || '—'),
-      el('td', null, stageDot(c.stage)),
-      el('td', null,
+        el('div', { class: 'faint mono' }, c.file_number)),
+      el('td', { 'data-label': 'Type' }, c.application_type || '—'),
+      el('td', { 'data-label': 'Stage' }, stageDot(c.stage)),
+      el('td', { 'data-label': 'Documents' },
         c.checklist.total_required
           ? el('span', { class: `pill ${c.checklist.complete ? 'good' : c.checklist.outstanding ? 'warn' : 'info'}` },
               `${c.checklist.approved}/${c.checklist.total_required}`)
           : el('span', { class: 'faint' }, '—'),
         c.checklist.awaiting_review ? el('span', { class: 'pill info', style: 'margin-left:4px' }, `${c.checklist.awaiting_review} to review`) : null,
         c.unread_messages ? el('span', { class: 'pill brand', style: 'margin-left:4px' }, '💬') : null),
-      el('td', { class: 'nowrap' }, c.closing_date ? fmtDate(c.closing_date) : '—'),
-      el('td', { class: 'nowrap faint' }, timeAgo(c.last_activity_at || c.updated_at)),
-      el('td', null, c.assigned_broker ? c.assigned_broker.name : el('span', { class: 'faint' }, '—')));
+      el('td', { class: 'nowrap', 'data-label': 'Closing' }, c.closing_date ? fmtDate(c.closing_date) : '—'),
+      el('td', { class: 'nowrap faint', 'data-label': 'Last activity' }, timeAgo(c.last_activity_at || c.updated_at)),
+      el('td', { 'data-label': 'Assigned' }, c.assigned_broker ? c.assigned_broker.name : el('span', { class: 'faint' }, '—')));
   });
 
   setView(
@@ -323,7 +607,7 @@ async function renderClients() {
           el('h3', null, 'No clients match'),
           el('p', null, q || filter ? 'Try adjusting your filters or search.' : 'Create your first client to get started.'))
       : el('div', { class: 'card table-wrap', style: 'padding:0 6px' },
-          el('table', { class: 'data' },
+          el('table', { class: 'data stackable' },
             el('thead', null, el('tr', null, ['', 'Client', 'Type', 'Stage', 'Documents', 'Closing', 'Activity', 'Assigned'].map((h) => el('th', null, h)))),
             el('tbody', null, rows))),
     bulkBar);
@@ -864,44 +1148,106 @@ async function renderTasksPage() {
 
 // ------------------------------------------------------------------ reports
 
+/**
+ * Reports.
+ *
+ * Two halves that answer different questions. The production half is "how is
+ * the book doing"; the relationship half is "who should I be calling" — the
+ * cheap, high-value reports that turn a document tracker into a book of
+ * business, all of them windows over lifecycle dates the platform already has.
+ */
 async function renderReports() {
   if (!can('reports.view')) {
-    setView(el('div', { class: 'card empty' }, el('p', null, 'Reports require the reports.view permission.')));
+    setView(el('div', { class: 'card empty' },
+      el('div', { class: 'big' }, '🔒'),
+      el('h3', null, 'Not available to your role'),
+      el('p', null, 'Reports need the reports.view permission. An administrator can grant it under Settings → Team.')));
     return;
   }
-  setView(el('div', { class: 'card' }, el('div', { class: 'skeleton', style: 'height:160px' })));
+  const params = new URLSearchParams((window.location.hash.split('?')[1] || ''));
+  const view = params.get('view') || 'production';
+  const kind = params.get('kind') || 'maturities';
+  const days = Number(params.get('days')) || (RELATIONSHIP_REPORTS.find(([k]) => k === kind) || [])[2] || 90;
+
+  const nav = el('div', { class: 'segmented mb' },
+    [['production', 'Production'], ['relationships', 'Relationships']].map(([value, label]) =>
+      el('button', {
+        class: view === value ? 'active' : '',
+        onclick: () => { window.location.hash = `#/reports?view=${value}`; },
+      }, label)));
+
+  if (view === 'relationships') {
+    const meta = RELATIONSHIP_REPORTS.find(([k]) => k === kind) || RELATIONSHIP_REPORTS[0];
+    const chips = el('div', { class: 'chips' }, RELATIONSHIP_REPORTS.map(([key, label, defaultDays]) =>
+      el('button', {
+        class: `chip ${kind === key ? 'active' : ''}`,
+        onclick: () => { window.location.hash = `#/reports?view=relationships&kind=${key}&days=${defaultDays}`; },
+      }, label)));
+
+    const windowSel = el('select', null, [30, 60, 90, 120, 180, 365].map((n) =>
+      el('option', { value: n, selected: days === n ? '' : undefined }, `Next ${n} days`)));
+    windowSel.addEventListener('change', () => {
+      window.location.hash = `#/reports?view=relationships&kind=${kind}&days=${windowSel.value}`;
+    });
+
+    setView(
+      el('div', { class: 'page-head' },
+        el('div', { class: 'grow' }, el('h1', null, 'Reports'), el('p', { class: 'sub' }, meta[3]))),
+      nav, chips,
+      el('div', { class: 'filter-bar' }, windowSel,
+        el('label', { class: 'checkbox', style: 'margin:0' },
+          el('input', {
+            type: 'checkbox', checked: localStorage.getItem('rel_mine') === '1' ? '' : undefined,
+            onchange: (e) => { localStorage.setItem('rel_mine', e.target.checked ? '1' : '0'); renderReports(); },
+          }), el('span', { class: 'small' }, 'My clients only'))),
+      await renderRelationshipReport(kind, days));
+    return;
+  }
+
+  setView(nav, el('div', { class: 'card' }, el('div', { class: 'skeleton', style: 'height:180px' })));
   const r = await api.get('/api/broker/reports');
 
   const maxStage = Math.max(1, ...r.by_stage.map((s) => s.n));
   const stageBars = el('div', { class: 'card' },
-    el('h3', null, 'Active applications by stage'),
-    r.by_stage.map((s) => el('div', { class: 'row', style: 'margin-bottom:7px' },
-      el('div', { style: 'width:170px;flex:none', class: 'small' }, s.name),
-      el('div', { style: 'flex:1;background:var(--bg);border-radius:6px;overflow:hidden;height:20px' },
-        el('div', { style: `width:${(s.n / maxStage) * 100}%;background:${s.color};height:100%;min-width:${s.n ? '20px' : '0'};border-radius:6px;color:#fff;font-size:0.75rem;display:flex;align-items:center;justify-content:flex-end;padding:0 6px` }, s.n || '')))));
+    el('h3', null, 'Active files by stage'),
+    r.by_stage.map((s) => el('div', { class: 'row', style: 'margin-bottom:6px' },
+      el('div', { style: 'width:160px;flex:none', class: 'small' }, s.name),
+      el('div', { style: 'flex:1;background:var(--bg-sunken);border-radius:6px;overflow:hidden;height:18px' },
+        el('div', {
+          style: `width:${(s.n / maxStage) * 100}%;background:${s.color};height:100%;min-width:${s.n ? '22px' : '0'};border-radius:6px;color:#fff;font-size:0.72rem;font-weight:700;display:flex;align-items:center;justify-content:flex-end;padding:0 6px`,
+        }, s.n || '')))));
 
-  const stat = (n, label) => el('div', { class: 'stat', style: 'cursor:default' },
-    el('div', { class: 'n' }, n === null || n === undefined ? '—' : String(n)), el('div', { class: 'lbl' }, label));
+  const stat = (n, label, sub) => el('div', { class: 'stat static' },
+    el('div', { class: 'n' }, n === null || n === undefined ? '—' : String(n)),
+    el('div', { class: 'lbl' }, label),
+    sub ? el('div', { class: 'sub' }, sub) : null);
 
   setView(
-    el('h1', null, 'Reports'),
+    el('div', { class: 'page-head' },
+      el('div', { class: 'grow' }, el('h1', null, 'Reports'), el('p', { class: 'sub' }, 'How the book is moving.'))),
+    nav,
     el('div', { class: 'stat-grid' },
       stat(r.active_clients, 'Active clients'),
       stat(r.documents_outstanding, 'Documents outstanding'),
       stat(r.documents_awaiting_review, 'Awaiting review'),
       stat(r.funded_this_year, 'Funded this year'),
-      stat(r.cancelled_total, 'Cancelled (all time)'),
+      stat(r.cancelled_total, 'Cancelled', 'all time'),
       stat(r.overdue_followups, 'Overdue follow-ups'),
-      stat(r.avg_days_in_stage, 'Avg days in current stage')),
+      stat(r.avg_days_in_stage, 'Avg days in stage')),
     stageBars,
     el('div', { class: 'card' },
-      el('h3', null, 'Upcoming closings (next 45 days)'),
+      el('div', { class: 'card-title' },
+        el('h3', null, 'Upcoming closings'),
+        el('div', { class: 'spacer' }),
+        el('a', { class: 'btn-link small', href: '#/reports?view=relationships&kind=closings&days=45' }, 'Full report →')),
       r.upcoming_closings.length === 0
-        ? el('p', { class: 'muted' }, 'No closings scheduled in the next 45 days.')
+        ? el('div', { class: 'empty', style: 'padding:20px' },
+            el('div', { class: 'big' }, '📆'),
+            el('p', null, 'Nothing closing in the next 45 days.'))
         : el('ul', { class: 'list' }, r.upcoming_closings.map((f) => el('li', { class: 'row clickable attention-item', onclick: () => goFile(f.id) },
             el('div', { class: 'grow' },
               el('div', { style: 'font-weight:600' }, f.client_name),
-              el('div', { class: 'faint' }, f.file_number)),
+              el('div', { class: 'faint mono' }, f.file_number)),
             stageDot(f.stage),
             el('span', { class: 'pill brand' }, fmtDate(f.closing_date)))))));
 }

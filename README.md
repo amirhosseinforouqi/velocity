@@ -194,10 +194,20 @@ every decision.
 **Broker portal** (`/broker`) — an *action dashboard*, not a client list:
 documents awaiting review, files waiting on client documents, unread client
 messages, follow-ups due today and overdue, and a ranked "Needs your attention"
-list where every item is one click from the relevant file. Plus clients with
+list where every item is one click from the relevant file. Every tile links
+into exactly the records it counts.
+
+Beyond that: a drag-to-move **pipeline board** grouped by stage, clients with
 search/filters/bulk actions, a guided client creation wizard with duplicate
-protection, full client files (overview, documents, chat, tasks, private notes,
-activity timeline, email history), tasks, reports, notifications and settings.
+protection, a **lender panel** with in-context product matching, **reports**
+(production plus six relationship reports), **automation** rules, and settings.
+
+The **deal workspace** is one file's whole picture behind a sticky header
+carrying its identity and six live qualification numbers — GDS, TDS, LTV, net
+worth, payment and gross income — so "where is this file and does it qualify?"
+is answered from any tab without scrolling. Tabs: overview, financials,
+property, mortgage, documents, AML, messages, tasks, notes, activity, emails.
+A tab a role has no permission for is not rendered at all.
 
 **Client portal** (`/portal`) — mobile-first and deliberately minimal. A client
 sees within seconds: where their mortgage stands (visual 6-step progress
@@ -206,6 +216,46 @@ documents are needed (with the broker's reason when a replacement is requested),
 and a chat button to their broker. Uploads support drag-and-drop, multi-file and
 phone camera capture (PDF/JPG/PNG/HEIC/WEBP); filenames are auto-matched to
 checklist items and the broker can always reclassify.
+
+## Qualification, lenders and compliance
+
+- **Live GDS/TDS/LTV/net worth** — computed on demand from income, assets,
+  liabilities, the property's carrying costs and the mortgage request; never
+  stored as editable fields, so they cannot drift from the records behind
+  them. Fixed rates compound **semi-annually**, the Canadian standard, and
+  accelerated payment frequencies are modelled as the monthly payment split
+  rather than a re-amortization.
+- **Contract rate vs. qualifying rate** — two separate calculations with two
+  separate column families, shown as visually distinct panels labelled *what
+  the client pays* and *what the lender qualifies them at*. The headline
+  ratios are the stress-tested ones; the contract-rate figures sit beside them
+  so a broker can explain the gap. The buffer and floor are brokerage
+  settings, because the published figures move.
+- **Mortgage requests** — a file can carry several (first plus second
+  position, or the same deal shopped at two lenders). Only the primary one
+  drives the file's headline ratios. A funded request cannot be deleted.
+- **Lender panel and in-context matching** — products are screened against the
+  file's own province, LTV, purpose, occupancy and lowest credit score, and
+  the ruled-out list says *why* each one did not fit. Choosing a product
+  snapshots the lender and product names, so a later catalog change never
+  rewrites what was chosen on the day.
+- **FINTRAC/AML** — a structured risk assessment per deal plus identity
+  verification, PEP declaration and sanction screening per borrower. The risk
+  level is **derived** from the answers every time it is read; there is no
+  editable risk field to quietly downgrade. PEP status follows the real
+  regulatory definition, which extends to family members and close
+  associates. With no screening provider configured the platform asks a human
+  to record what they actually checked rather than showing a green tick
+  nobody earned.
+- **Lifecycle dates and automation** — fifteen canonical dates (submitted,
+  approved, conditions due, closing, funded, rate-hold expiry, maturity…) are
+  the trigger points for date-driven rules and the six relationship reports.
+  A rule fires once per file per date, enforced by a unique index rather than
+  in-process memory, so a restart mid-pass cannot duplicate a follow-up.
+  Rules create tasks for a person by default; letting one email a client
+  directly is off until a brokerage switches it on deliberately.
+- **CASL consent** — recorded with when and how it was obtained, on its own
+  endpoint so the trail is not changed as a side effect of fixing a typo.
 
 ## Key mechanics
 
@@ -309,6 +359,9 @@ server/
   crypto-store.js AES-256-GCM envelope encryption for documents and results
   scan.js         ClamAV malware scanning
   checklist.js    document requirement engine + per-client customization
+  metrics.js      GDS/TDS/LTV/net worth + Canadian mortgage payment math
+  aml.js          FINTRAC risk assessment, PEP declaration, sanction screening
+  workflows.js    date-driven automation (lifecycle trigger + day offset)
   nextstep.js     client "next step" + broker attention computation
   jobs.js         background passes (reminders, expiry, scan, AI, OneDrive)
   backup.js       portable backup and restore
@@ -322,12 +375,13 @@ server/
   log.js          activity timeline + hash-chained audit log
   sentry.js       error reporting with PII scrubbing
   serialize.js    API shapes, strictly separate client and broker views
-  routes/         auth / broker / client / settings / ops APIs
+  routes/         auth / broker / deal / client / settings / ops APIs
 api/index.js      Vercel entry point (same handler as npm start)
 skills/
   document-review/SKILL.md   the Claude review skill (= system prompt)
 public/           two vanilla-JS SPAs (broker/, portal/) + shared design system
 tests/            security / workflow / checklist / backup / integrations / smtp
+                  / metrics / deal
 scripts/          migrate, keygen, backup, restore, jobs, demo seed, reset
 docs/DEPLOYMENT.md  production deployment and go-live checklist
 ```
@@ -370,6 +424,16 @@ actually reaches.
   verifies AWS Signature V4 the way a real bucket does, including backup and
   restore, and the refusal to run on an ephemeral filesystem.
 - `smtp.test.js` — a real STARTTLS + AUTH LOGIN + DATA conversation.
+- `metrics.test.js` — the qualification arithmetic against the standard
+  Canadian formulas: semi-annual compounding, the stress-test rate, half of
+  the condo fees, heat not double-counted, rental offset vs. addition, and a
+  debt paid off at closing leaving TDS.
+- `deal.test.js` — the deal module end to end: ratios moving as records
+  change, the primary mortgage request, product matching and its exclusion
+  reasons, the AML gap list and derived risk, workflow trigger-date maths
+  including the off-by-one boundary and the no-duplicate guarantee, and that
+  a role without `financials.view` cannot reach a client's financial position
+  or AML record.
 
 ## Operational notes
 

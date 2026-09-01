@@ -1044,7 +1044,8 @@ function register(router) {
     }
     await run(
       `UPDATE document_requests SET document_type_id = ?, applicant_id = ?, due_date = ?, client_message = ?,
-         internal_note = ?, requirement = ?, reminders_enabled = ?, expires_days = ?, updated_at = ?
+         internal_note = ?, requirement = ?, reminders_enabled = ?, expires_days = ?,
+         is_condition = ?, is_compliance = ?, esign_required = ?, lender_reference = ?, updated_at = ?
        WHERE id = ?`,
       docTypeId, applicantId,
       b.due_date !== undefined ? dateStr(b.due_date) : request.due_date,
@@ -1053,6 +1054,10 @@ function register(router) {
       b.requirement === 'optional' ? 'optional' : b.requirement === 'required' ? 'required' : request.requirement,
       b.reminders_enabled !== undefined ? bool(b.reminders_enabled) : request.reminders_enabled,
       b.expires_days !== undefined ? intOrNull(b.expires_days) : request.expires_days,
+      b.is_condition !== undefined ? bool(b.is_condition) : request.is_condition,
+      b.is_compliance !== undefined ? bool(b.is_compliance) : request.is_compliance,
+      b.esign_required !== undefined ? bool(b.esign_required) : request.esign_required,
+      b.lender_reference !== undefined ? str(b.lender_reference, 120) : request.lender_reference,
       now(), request.id
     );
     if (docTypeId !== request.document_type_id || applicantId !== request.applicant_id) {
@@ -1082,6 +1087,51 @@ function register(router) {
     await run('DELETE FROM document_requests WHERE id = ?', request.id);
     await activity(request.file_id, ctx.user, 'document_request_removed', 'A document request was removed for this client');
     return { ok: true };
+  });
+
+  /**
+   * Mark documents as sent to the lender.
+   *
+   * This is deliberately its own trail rather than another value of the
+   * lifecycle status: what the client owes the brokerage and what the
+   * brokerage has forwarded to the lender are two different questions, asked
+   * by two different people, and collapsing them loses the answer to both.
+   */
+  router.post('/api/broker/files/:id/send-to-lender', requirePermission('documents.review'), async (ctx) => {
+    const file = await fileOrThrow(ctx.params.id);
+    const ids = Array.isArray(ctx.body && ctx.body.request_ids)
+      ? ctx.body.request_ids.map(intOrNull).filter(Boolean).slice(0, 200)
+      : [];
+    if (!ids.length) throw new ApiError(400, 'Choose at least one document to send.', 'missing_field');
+    const reference = str(ctx.body && ctx.body.lender_reference, 120);
+
+    // Only approved documents leave the building. Forwarding something the
+    // broker has not reviewed is how a wrong pay stub reaches an underwriter.
+    const rows = await all(
+      `SELECT r.*, dt.name AS document_name FROM document_requests r
+         JOIN document_types dt ON dt.id = r.document_type_id
+        WHERE r.file_id = ? AND r.id = ANY(?::int[])`,
+      file.id, ids
+    );
+    const sendable = rows.filter((r) => r.status === 'approved');
+    const skipped = rows.filter((r) => r.status !== 'approved').map((r) => r.document_name);
+
+    for (const row of sendable) {
+      await run(
+        `UPDATE document_requests SET sent_to_lender_at = ?, sent_to_lender_by = ?,
+           lender_reference = CASE WHEN ? = '' THEN lender_reference ELSE ? END, updated_at = ?
+         WHERE id = ?`,
+        now(), ctx.user.id, reference, reference, now(), row.id
+      );
+    }
+    if (sendable.length) {
+      await activity(
+        file.id, ctx.user, 'documents_sent_to_lender',
+        `${sendable.length} document${sendable.length === 1 ? '' : 's'} marked as sent to the lender${reference ? ` (ref ${reference})` : ''}`
+      );
+      await audit(ctx.user.id, 'documents_sent_to_lender', 'client_file', file.id, ctx.ip, { count: sendable.length });
+    }
+    return { ok: true, sent: sendable.length, skipped };
   });
 
   /**
@@ -1582,7 +1632,48 @@ function register(router) {
         LIMIT 20`,
       like, like, like, like, like, digits, `%${digits}%`
     );
-    return { results: await summarize(files) };
+    const results = await summarize(files);
+
+    // `scope` keeps the type-ahead cheap by default. The full search asks for
+    // everything, and each extra type is permission-checked on its own —
+    // finding a note you may not read is still reading it.
+    const scope = str(ctx.query.scope, 20) || 'files';
+    if (scope === 'files') return { results, scope, counts: { files: results.length } };
+
+    const out = { results, scope, counts: { files: results.length } };
+
+    if (await hasPermission(ctx.user, 'tasks.manage')) {
+      out.tasks = await all(
+        `SELECT t.id, t.title, t.due_date, t.status, t.file_id, f.file_number
+           FROM tasks t LEFT JOIN client_files f ON f.id = t.file_id
+          WHERE lower(t.title) LIKE ? OR lower(t.description) LIKE ?
+          ORDER BY t.status = 'pending' DESC, t.due_date NULLS LAST LIMIT 15`,
+        like, like
+      );
+      out.counts.tasks = out.tasks.length;
+    }
+    if (await hasPermission(ctx.user, 'notes.manage')) {
+      out.notes = await all(
+        `SELECT n.id, n.file_id, n.body, n.created_at, f.file_number
+           FROM notes n JOIN client_files f ON f.id = n.file_id
+          WHERE lower(n.body) LIKE ? ORDER BY n.id DESC LIMIT 15`,
+        like
+      );
+      out.counts.notes = out.notes.length;
+    }
+    if (await hasPermission(ctx.user, 'documents.view')) {
+      out.documents = await all(
+        `SELECT r.id, r.file_id, r.status, dt.name AS document_name, f.file_number
+           FROM document_requests r
+           JOIN document_types dt ON dt.id = r.document_type_id
+           JOIN client_files f ON f.id = r.file_id
+          WHERE lower(dt.name) LIKE ? OR lower(r.client_message) LIKE ? OR lower(r.internal_note) LIKE ?
+          ORDER BY r.id DESC LIMIT 15`,
+        like, like, like
+      );
+      out.counts.documents = out.documents.length;
+    }
+    return out;
   });
 
   // ------------------------------ Reports ------------------------------

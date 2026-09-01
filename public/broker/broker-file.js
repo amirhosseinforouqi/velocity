@@ -36,55 +36,94 @@ function docTypeName(id) {
 // File detail view
 // ===================================================================
 
+/**
+ * The deal workspace.
+ *
+ * A sticky header carrying the file's identity and its six qualification
+ * numbers, then one row of tabs. Whatever tab is open, "where is this file
+ * and does it qualify?" is answered without scrolling — that question comes
+ * up in every phone call, and hunting for it in a long page is the single
+ * biggest tax the old layout charged.
+ *
+ * Tabs a role cannot reach are not rendered, rather than rendered and then
+ * refusing.
+ */
 async function renderFileView(fileId, tab) {
-  tab = tab || 'overview';
   const view = document.getElementById('view');
   clearNode(view);
-  view.append(el('div', { class: 'card' }, el('div', { class: 'skeleton', style: 'height:130px' })));
+  view.append(el('div', { class: 'card' }, el('div', { class: 'skeleton', style: 'height:150px' })));
 
   let data;
   try {
     data = await api.get(`/api/broker/files/${fileId}`);
   } catch (err) {
     clearNode(view);
-    view.append(el('div', { class: 'card empty' }, el('p', null, err.message)));
+    view.append(el('div', { class: 'card empty' },
+      el('div', { class: 'big' }, '🔍'),
+      el('h3', null, 'That file is not available'),
+      el('p', null, err.message)));
     return;
   }
   const { file, applicants, next_step, attention, stage_history } = data;
 
   const tabs = [
-    ['overview', 'Overview'],
-    ['documents', `Documents${file.checklist.awaiting_review ? ` (${file.checklist.awaiting_review})` : ''}`],
-    ['messages', `Messages${file.unread_messages ? ` (${file.unread_messages})` : ''}`],
-    ['tasks', 'Tasks'],
-    ['notes', 'Notes'],
-    ['activity', 'Activity'],
-    ['emails', 'Emails'],
-  ];
+    ['overview', 'Overview', true],
+    ['financials', 'Financials', can('financials.view')],
+    ['property', 'Property', can('financials.view')],
+    ['mortgage', 'Mortgage', can('financials.view')],
+    ['documents', `Documents${file.checklist.awaiting_review ? ` (${file.checklist.awaiting_review})` : ''}`, can('documents.view')],
+    ['aml', 'AML', can('aml.view')],
+    ['messages', `Messages${file.unread_messages ? ` (${file.unread_messages})` : ''}`, true],
+    ['tasks', 'Tasks', true],
+    ['notes', 'Notes', can('notes.manage')],
+    ['activity', 'Activity', true],
+    ['emails', 'Emails', can('emails.view')],
+  ].filter(([, , allowed]) => allowed);
 
-  const head = el('div', null,
-    el('div', { class: 'file-head' },
-      el('h1', null, file.client_name),
-      stageDot(file.stage),
-      el('span', { class: 'pill' }, file.file_number),
-      file.status !== 'active' ? el('span', { class: 'pill bad' }, file.status) : null,
-      el('div', { class: 'spacer' }),
-      quickActions(file)
-    ),
-    el('div', { class: 'tabs', role: 'tablist' }, tabs.map(([key, label]) =>
-      el('button', {
-        role: 'tab', class: key === tab ? 'active' : '', 'aria-selected': key === tab ? 'true' : 'false',
-        onclick: () => goFile(file.id, key),
-      }, label)))
-  );
+  tab = tabs.some(([key]) => key === tab) ? tab : 'overview';
+
+  // The header needs the qualification numbers, which live behind the
+  // financials permission. Without it the file still opens — just with an
+  // identity strip instead of a metric bar.
+  let head;
+  const headOptions = { stage: stageDot(file.stage), actions: quickActions(file) };
+  window.CURRENT_FILE = file;
+  window.CURRENT_HEAD_OPTIONS = headOptions;
+
+  if (can('financials.view')) {
+    try {
+      const metricsRes = await api.get(`/api/broker/files/${fileId}/metrics`);
+      head = metricBar(file, metricsRes.metrics, headOptions);
+    } catch { head = null; }
+  }
+  if (!head) {
+    head = el('div', { class: 'deal-head' },
+      el('div', { class: 'deal-head-top' },
+        el('h1', null, file.client_name),
+        headOptions.stage,
+        el('span', { class: 'pill outline mono' }, file.file_number),
+        file.status !== 'active' ? el('span', { class: 'pill bad' }, file.status) : null,
+        el('div', { class: 'spacer' }),
+        headOptions.actions));
+  }
+
+  const tabBar = el('div', { class: 'tabs', role: 'tablist' }, tabs.map(([key, label]) =>
+    el('button', {
+      role: 'tab', class: key === tab ? 'active' : '', 'aria-selected': key === tab ? 'true' : 'false',
+      onclick: () => goFile(file.id, key),
+    }, label)));
 
   const body = el('div', { id: 'file-tab-body' });
   clearNode(view);
-  view.append(head, body);
+  view.append(head, tabBar, body);
 
   const renderers = {
     overview: () => renderFileOverview(body, { file, applicants, next_step, attention, stage_history }),
+    financials: () => renderFileFinancials(body, file),
+    property: () => renderFileProperty(body, file),
+    mortgage: () => renderFileMortgage(body, file),
     documents: () => renderFileDocuments(body, file),
+    aml: () => renderFileAml(body, file),
     messages: () => renderFileMessages(body, file),
     tasks: () => renderFileTasks(body, file),
     notes: () => renderFileNotes(body, file),
@@ -148,7 +187,10 @@ function renderFileOverview(body, { file, applicants, next_step, attention, stag
         el('div', { class: 'row wrap' },
           el('span', { style: 'font-weight:600' }, a.name),
           el('span', { class: 'pill' }, a.role.replace('_', '-')),
-          a.has_portal_access ? el('span', { class: 'pill good' }, 'Portal ✓') : el('span', { class: 'pill warn' }, 'No portal')),
+          a.has_portal_access ? el('span', { class: 'pill good' }, 'Portal ✓') : el('span', { class: 'pill warn' }, 'No portal'),
+          a.casl_consent
+            ? el('span', { class: 'pill good', title: `Consent recorded ${fmtDate(a.casl_consent_at)}${a.casl_consent_source ? ' — ' + a.casl_consent_source : ''}` }, 'Marketing OK')
+            : el('span', { class: 'pill', title: 'No marketing consent on file. Canadian anti-spam law requires it before any marketing send.' }, 'No CASL consent')),
         el('div', { class: 'small muted' }, [a.email, a.phone].filter(Boolean).join(' · ') || 'No contact details'),
         a.employment_type ? el('div', { class: 'faint' }, `${a.employment_type.replace('_', '-')}${a.employer_name ? ' at ' + a.employer_name : ''}${a.job_title ? ' · ' + a.job_title : ''}`) : null),
       can('clients.edit') ? el('div', { class: 'row' },
@@ -163,7 +205,8 @@ function renderFileOverview(body, { file, applicants, next_step, attention, stag
             } catch (err) { toast(err.message, 'bad'); }
             e.target.disabled = false;
           },
-        }, 'Invite') : null) : null
+        }, 'Invite') : null,
+        el('button', { class: 'btn sm ghost', onclick: () => caslModal(file, a) }, 'CASL')) : null
     )))
   );
 
@@ -220,7 +263,150 @@ function renderFileOverview(body, { file, applicants, next_step, attention, stag
       }, 'Reactivate') : null) : null);
 
   clearNode(body);
-  body.append(attentionCard, nextCard, appCard, applicantsCard, historyCard, adminCard);
+  body.append(attentionCard, nextCard, appCard, keyDatesCard(file), applicantsCard, historyCard, adminCard);
+}
+
+/**
+ * The dates the rest of the platform hangs off.
+ *
+ * Every automation rule fires relative to one of these, the relationship
+ * reports are windows over them, and a maturity date entered once is what
+ * makes the renewal conversation happen three years later. Editing is inline
+ * because a broker updates two of them at a time, not all fourteen.
+ */
+const LIFECYCLE_LABELS = [
+  ['lead_at', 'Lead received'],
+  ['application_at', 'Application started'],
+  ['submitted_at', 'Submitted to lender'],
+  ['approved_at', 'Approved'],
+  ['accepted_at', 'Commitment accepted'],
+  ['conditions_due_date', 'Conditions due'],
+  ['conditions_met_at', 'Conditions met'],
+  ['appraisal_ordered_at', 'Appraisal ordered'],
+  ['appraisal_received_at', 'Appraisal received'],
+  ['solicitor_instructed_at', 'Solicitor instructed'],
+  ['closing_date', 'Closing'],
+  ['funded_at', 'Funded'],
+  ['lender_payment_at', 'Lender payment received'],
+  ['rate_hold_expires_at', 'Rate hold expires'],
+  ['maturity_date', 'Maturity'],
+];
+
+function keyDatesCard(file) {
+  const holder = el('div', { class: 'facts' });
+  const card = el('div', { class: 'card' },
+    el('div', { class: 'card-title' },
+      el('h3', null, 'Key dates'),
+      el('div', { class: 'spacer' }),
+      can('clients.edit') ? el('button', { class: 'btn sm secondary', onclick: () => keyDatesModal(file) }, 'Edit') : null),
+    el('p', { class: 'faint' }, 'Automation rules fire relative to these, and the relationship reports are built from them.'),
+    holder);
+
+  (async () => {
+    let dates = {};
+    try {
+      const deal = await api.get(`/api/broker/files/${file.id}/deal`);
+      dates = deal.file.lifecycle || {};
+    } catch {
+      // Financial permission is not required to see a closing date, so fall
+      // back to what the file summary already carries.
+      dates = { closing_date: file.closing_date };
+    }
+    file._lifecycle = dates;
+    clearNode(holder);
+    const set = LIFECYCLE_LABELS.filter(([key]) => dates[key]);
+    if (!set.length) {
+      holder.append(el('p', { class: 'muted' }, 'No key dates recorded yet. Adding the closing and maturity dates is what turns follow-up into something the platform does rather than something you remember.'));
+      return;
+    }
+    for (const [key, label] of set) {
+      holder.append(el('div', { class: 'fact' },
+        el('div', { class: 'k' }, label),
+        el('div', { class: 'v' }, fmtDate(dates[key]))));
+    }
+  })();
+
+  return card;
+}
+
+function keyDatesModal(file) {
+  const inputs = new Map();
+  const fields = LIFECYCLE_LABELS.map(([key, label]) => {
+    const input = el('input', { type: 'date', value: (file._lifecycle || {})[key] || '' });
+    inputs.set(key, input);
+    return el('label', { class: 'field' }, el('span', null, label), input);
+  });
+  const error = el('p', { class: 'form-error' });
+
+  openModal('Key dates',
+    el('div', null,
+      el('div', { class: 'help-text' },
+        el('strong', null, 'These drive the automation. '),
+        'A rule set to fire ten days before the rate hold expires does nothing until the expiry date is on the file.'),
+      el('div', { class: 'form-row cols-2' }, fields),
+      error),
+    (close) => [
+      el('button', { class: 'btn secondary', onclick: close }, 'Cancel'),
+      el('button', {
+        class: 'btn',
+        onclick: async (e) => {
+          e.target.disabled = true;
+          const payload = {};
+          for (const [key, input] of inputs) payload[key] = input.value || null;
+          try {
+            await api.patch(`/api/broker/files/${file.id}/lifecycle`, payload);
+            close();
+            toast('Key dates saved.', 'good');
+            renderFileView(file.id, 'overview');
+          } catch (err) { error.textContent = err.message; e.target.disabled = false; }
+        },
+      }, 'Save'),
+    ]);
+}
+
+/**
+ * CASL consent.
+ *
+ * Its own dialog rather than a checkbox on the applicant form, because
+ * Canadian anti-spam law cares when and how consent was obtained, and that
+ * record should not be changed as a side effect of fixing a typo in a name.
+ */
+function caslModal(file, applicant) {
+  const consent = el('input', { type: 'checkbox', checked: applicant.casl_consent ? '' : undefined });
+  const source = el('select', null, [
+    ['Verbal consent given during a call', 'Verbal, during a call'],
+    ['Written consent on the application form', 'Written, on the application'],
+    ['Consent given through the client portal', 'Through the client portal'],
+    ['Consent given at an in-person meeting', 'In person'],
+  ].map(([v, l]) => el('option', { value: v }, l)));
+  const error = el('p', { class: 'form-error' });
+
+  openModal(`Marketing consent — ${applicant.name}`,
+    el('div', null,
+      el('div', { class: 'help-text' },
+        el('strong', null, 'CASL requires more than a yes. '),
+        'The record has to show when consent was given and how it was obtained, and it gates any marketing send from this platform. Withdrawing it takes effect immediately.'),
+      el('label', { class: 'checkbox' }, consent, 'This client consents to receiving marketing messages'),
+      el('label', { class: 'field' }, el('span', null, 'How was it obtained?'), source),
+      applicant.casl_consent_at
+        ? el('p', { class: 'faint' }, `Currently recorded ${fmtDateTime(applicant.casl_consent_at)}${applicant.casl_consent_source ? ` — ${applicant.casl_consent_source}` : ''}.`)
+        : null,
+      error),
+    (close) => [
+      el('button', { class: 'btn secondary', onclick: close }, 'Cancel'),
+      el('button', {
+        class: 'btn',
+        onclick: async (e) => {
+          e.target.disabled = true;
+          try {
+            await api.post(`/api/broker/applicants/${applicant.id}/casl`, { consent: consent.checked, source: source.value });
+            close();
+            toast('Consent recorded.', 'good');
+            renderFileView(file.id, 'overview');
+          } catch (err) { error.textContent = err.message; e.target.disabled = false; }
+        },
+      }, 'Save'),
+    ]);
 }
 
 /** Staff activation links (separate flow from client temporary passwords). */
@@ -425,14 +611,56 @@ async function renderFileDocuments(body, file) {
     groups.get(key).push(r);
   }
 
+  // Selecting documents to mark as sent to the lender. Deliberately a
+  // separate trail from the client-facing lifecycle: "what the client still
+  // owes us" and "what we have forwarded" are two different questions.
+  const selected = new Set();
+  const sendBar = el('div', { class: 'bulk-bar hidden' });
+  const paintSendBar = () => {
+    clearNode(sendBar);
+    sendBar.classList.toggle('hidden', selected.size === 0);
+    if (!selected.size) return;
+    sendBar.append(
+      el('span', null, `${selected.size} selected`),
+      el('div', { class: 'spacer' }),
+      el('button', {
+        class: 'btn sm',
+        onclick: async () => {
+          const reference = prompt('Lender reference for this submission (optional):') || '';
+          try {
+            const res = await api.post(`/api/broker/files/${file.id}/send-to-lender`, {
+              request_ids: [...selected], lender_reference: reference,
+            });
+            if (res.skipped.length) {
+              toast(`${res.sent} marked as sent. Skipped ${res.skipped.length} not yet approved.`, res.sent ? 'good' : 'bad');
+            } else {
+              toast(`${res.sent} document${res.sent === 1 ? '' : 's'} marked as sent to the lender.`, 'good');
+            }
+            renderFileDocuments(body, file);
+          } catch (err) { toast(err.message, 'bad'); }
+        },
+      }, '📤 Mark as sent to lender'),
+      el('button', { class: 'btn sm secondary', onclick: () => { selected.clear(); renderFileDocuments(body, file); } }, 'Clear'));
+  };
+
   for (const [groupName, list] of groups) {
     body.append(el('div', { class: 'doc-group-title' }, groupName));
     const card = el('div', { class: 'card' });
     const ul = el('ul', { class: 'list' });
-    for (const r of list) ul.append(brokerDocRow(file, r));
+    for (const r of list) {
+      const row = brokerDocRow(file, r);
+      if (can('documents.review') && r.status === 'approved' && !(r.flags && r.flags.sent_to_lender)) {
+        const box = el('input', { type: 'checkbox', 'aria-label': `Select ${r.document_name} to send to the lender` });
+        box.addEventListener('change', () => { box.checked ? selected.add(r.id) : selected.delete(r.id); paintSendBar(); });
+        row.prepend(el('div', { class: 'row', style: 'margin-bottom:4px' }, box,
+          el('span', { class: 'faint' }, 'Ready to send to the lender')));
+      }
+      ul.append(row);
+    }
     card.append(ul);
     body.append(card);
   }
+  body.append(sendBar);
 
   // Documents removed for this client specifically — restorable without
   // touching the brokerage's global defaults.
@@ -454,6 +682,30 @@ async function renderFileDocuments(body, file) {
         }, `+ ${e.document_name}`)))));
     }
   } catch { /* non-fatal */ }
+}
+
+/**
+ * The dimensions a single status cannot hold.
+ *
+ * A document can be received and not yet sent to the lender; a lender
+ * condition is a different thing from a provincial compliance form even when
+ * both read "approved". Those are independent facts about the same document,
+ * so they are shown as independent lights rather than folded into one badge
+ * that would have to lie about two of them.
+ */
+function docFlagRow(r) {
+  const flags = r.flags || {};
+  const spec = [
+    ['R', 'received', 'Received from the client', flags.received, 'good'],
+    ['A', 'approved', 'Approved by the brokerage', flags.approved, 'good'],
+    ['C', 'condition', 'A lender condition', flags.condition, ''],
+    ['K', 'compliance', 'A compliance / regulatory form', flags.compliance, ''],
+    ['E', 'esign', flags.esign_completed ? 'Signed electronically' : 'Needs an electronic signature',
+      flags.esign_required || flags.esign_completed, flags.esign_completed ? 'good' : 'warn'],
+    ['L', 'lender', r.sent_to_lender_at ? `Sent to the lender ${fmtDate(r.sent_to_lender_at)}` : 'Not sent to the lender', flags.sent_to_lender, 'good'],
+  ];
+  return el('span', { class: 'flag-row' }, spec.map(([letter, key, title, on, tone]) =>
+    el('span', { class: `flag ${on ? 'on ' + tone : ''}`, title, 'aria-label': `${title}: ${on ? 'yes' : 'no'}` }, letter)));
 }
 
 function brokerDocRow(file, r) {
@@ -515,7 +767,8 @@ function brokerDocRow(file, r) {
           el('span', { style: 'font-weight:600' }, r.document_name),
           el('span', { class: `pill ${pill.cls}` }, pill.label),
           r.requirement === 'optional' ? el('span', { class: 'pill' }, 'Optional') : null,
-          r.source === 'manual' ? el('span', { class: 'pill' }, 'Manual') : null),
+          r.source === 'manual' ? el('span', { class: 'pill' }, 'Manual') : null,
+          docFlagRow(r)),
         r.due_date ? el('div', { class: 'faint' }, `Due ${fmtDate(r.due_date)}`) : null,
         r.expires_at ? el('div', { class: 'faint' }, `Valid until ${fmtDate(r.expires_at)}`) : null,
         r.client_message ? el('div', { class: 'small muted' }, `Client note: “${r.client_message}”`) : null,
@@ -737,6 +990,11 @@ function editRequestModal(file, r) {
   const expires = el('input', { type: 'number', value: r.expires_days ?? '', placeholder: 'e.g. 60' });
   const optional = el('input', { type: 'checkbox', checked: r.requirement === 'optional' ? '' : undefined });
   const reminders = el('input', { type: 'checkbox', checked: r.reminders_enabled ? '' : undefined });
+  const flags = r.flags || {};
+  const isCondition = el('input', { type: 'checkbox', checked: flags.condition ? '' : undefined });
+  const isCompliance = el('input', { type: 'checkbox', checked: flags.compliance ? '' : undefined });
+  const esign = el('input', { type: 'checkbox', checked: flags.esign_required ? '' : undefined });
+  const lenderRef = el('input', { type: 'text', value: r.lender_reference || '', placeholder: 'Lender’s reference for this item' });
 
   openModal(`Edit: ${r.document_name}`,
     el('div', null,
@@ -748,7 +1006,16 @@ function editRequestModal(file, r) {
       el('label', { class: 'field' }, el('span', null, 'Message to the client'), message),
       el('label', { class: 'field' }, el('span', null, 'Internal note'), internal),
       el('label', { class: 'checkbox' }, optional, 'Optional (nice to have)'),
-      el('label', { class: 'checkbox' }, reminders, 'Automatic reminders for this item')),
+      el('label', { class: 'checkbox' }, reminders, 'Automatic reminders for this item'),
+      el('div', { class: 'section-title' }, 'What kind of document is this?'),
+      el('p', { class: 'faint' }, 'These sit beside the status rather than replacing it — a document can be approved and still be an outstanding lender condition.'),
+      el('label', { class: 'checkbox' }, isCondition, 'A lender condition on the commitment'),
+      el('label', { class: 'checkbox' }, isCompliance, 'A compliance or regulatory form'),
+      el('label', { class: 'checkbox' }, esign, 'Needs an electronic signature'),
+      el('label', { class: 'field' }, el('span', null, 'Lender reference'), lenderRef),
+      r.sent_to_lender_at
+        ? el('p', { class: 'faint' }, `Marked as sent to the lender ${fmtDateTime(r.sent_to_lender_at)}.`)
+        : null),
     (close) => [
       el('button', {
         class: 'btn danger', style: 'margin-right:auto',
@@ -770,6 +1037,10 @@ function editRequestModal(file, r) {
               expires_days: expires.value || null,
               requirement: optional.checked ? 'optional' : 'required',
               reminders_enabled: reminders.checked,
+              is_condition: isCondition.checked,
+              is_compliance: isCompliance.checked,
+              esign_required: esign.checked,
+              lender_reference: lenderRef.value,
             });
             close(); toast('Saved.', 'good'); renderFileView(file.id, 'documents');
           } catch (err) { toast(err.message, 'bad'); e.target.disabled = false; }
