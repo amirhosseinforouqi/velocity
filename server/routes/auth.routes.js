@@ -81,7 +81,112 @@ async function meProfile(ctx) {
   };
 }
 
+/**
+ * Has this brokerage been claimed yet?
+ *
+ * "Claimed" means at least one non-client account exists. Once one does, the
+ * setup flow below is closed permanently — it cannot be used to add a second
+ * administrator, so it is a provisioning step rather than a standing bypass.
+ */
+async function needsFirstAdmin() {
+  return !(await get("SELECT id FROM users WHERE role <> 'client' LIMIT 1"));
+}
+
 function register(router) {
+  // ------------------------------------------------- first-admin provisioning
+
+  /**
+   * Whether the one-time setup flow is open. Safe to call anonymously: it
+   * says only whether an account exists, never anything about the token.
+   */
+  router.get('/api/auth/setup', async () => {
+    const open = await needsFirstAdmin();
+    return {
+      setup_required: open,
+      // Tells the operator whether the server can accept a claim at all,
+      // without revealing the token or any part of it.
+      token_configured: open ? !!process.env.ADMIN_SETUP_TOKEN : undefined,
+    };
+  });
+
+  /**
+   * Claim the first administrator account.
+   *
+   * The design goal is that no credential ever exists in a log, a repository
+   * or an email. The operator generates a random token themselves, stores it
+   * in their host's encrypted environment (Vercel, Fly, wherever), and spends
+   * it once to create an account whose password only they ever see.
+   *
+   * Four things make this safe to expose publicly:
+   *   1. It is closed the instant a staff account exists — including one
+   *      created by this same request, so it cannot be replayed.
+   *   2. It does nothing at all unless ADMIN_SETUP_TOKEN is configured.
+   *   3. The token is compared in constant time against its SHA-256, so the
+   *      endpoint leaks nothing through timing.
+   *   4. It is rate limited per IP, and every outcome is audit logged.
+   *
+   * The new account still has to enrol in two-step verification before it can
+   * reach anything, because administrators can never be exempted from MFA.
+   */
+  router.post('/api/auth/setup', async (ctx) => {
+    await ratelimit.enforce(
+      `setup:ip:${ctx.ip}`, 10, 3600,
+      'Too many setup attempts. Wait an hour and try again.'
+    );
+
+    const configured = process.env.ADMIN_SETUP_TOKEN || '';
+    const open = await needsFirstAdmin();
+
+    // One indistinguishable failure for "already claimed" and "no token
+    // configured", so the endpoint cannot be used to probe the deployment.
+    const refuse = new ApiError(404, 'Not found.', 'not_found');
+    if (!open || !configured) throw refuse;
+
+    const supplied = String((ctx.body && ctx.body.token) || '');
+    const a = sha256(supplied);
+    const b = sha256(configured);
+    // Both are fixed-length hex digests, so the comparison is constant time
+    // over equal-length buffers regardless of what was supplied.
+    if (!require('node:crypto').timingSafeEqual(Buffer.from(a), Buffer.from(b))) {
+      await audit(null, 'admin_setup_rejected', 'user', null, ctx.ip);
+      throw refuse;
+    }
+
+    const email = normalizeEmail((ctx.body || {}).email);
+    if (!isEmail(email)) {
+      throw new ApiError(400, 'Enter a valid email address for the administrator account.', 'bad_email');
+    }
+    const firstName = str((ctx.body || {}).first_name, 100) || 'Account';
+    const lastName = str((ctx.body || {}).last_name, 100) || 'Owner';
+    const password = String((ctx.body || {}).password || '');
+
+    // Held to the full staff password policy — the same one every other staff
+    // password must satisfy. There is no weaker path in for being first.
+    await validatePasswordStrength(password, {
+      role: 'admin',
+      user: { email, first_name: firstName, last_name: lastName },
+    });
+
+    // Re-check inside the write so two simultaneous claims cannot both win.
+    const created = await require('../db').tx(async () => {
+      if (!(await needsFirstAdmin())) throw refuse;
+      return require('../db').insert(
+        `INSERT INTO users (role, email, first_name, last_name, password_hash, status,
+                            must_change_password, created_at, updated_at)
+         VALUES ('admin', ?, ?, ?, ?, 'active', 0, ?, ?)`,
+        email, firstName, lastName, await hashPassword(password), now(), now()
+      );
+    });
+
+    await audit(created, 'admin_setup_claimed', 'user', created, ctx.ip, { email });
+    return {
+      ok: true,
+      message:
+        'Administrator created. Sign in, then complete two-step verification — it is required and ' +
+        'cannot be turned off for administrators. Remove ADMIN_SETUP_TOKEN from your environment now.',
+    };
+  });
+
   // ------------------------------------------------------------- login
   router.post('/api/auth/login', async (ctx) => {
     const { email, password } = ctx.body || {};

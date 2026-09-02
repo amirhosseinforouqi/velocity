@@ -193,7 +193,7 @@ function resolvePage(pathname) {
   if (
     pathname === '/' || pathname === '/login' || pathname === '/activate' ||
     pathname === '/reset' || pathname === '/change-password' ||
-    pathname === '/mfa' || pathname === '/mfa-setup'
+    pathname === '/mfa' || pathname === '/mfa-setup' || pathname === '/setup'
   ) {
     return path.join(PUBLIC_DIR, 'login.html');
   }
@@ -266,6 +266,22 @@ async function handle(req, res) {
   };
 
   try {
+    // Liveness, genuinely without dependencies — answered BEFORE boot, so it
+    // still responds when the database is unreachable or the environment is
+    // misconfigured. That is the whole point of a liveness probe: when the
+    // application cannot start, this is the only endpoint that can tell you
+    // so. `ready` reports whether boot has succeeded; the *reason* it failed
+    // stays in the server log rather than being handed to anonymous callers.
+    if (pathname === '/health') {
+      let booted = false;
+      try {
+        await ready();
+        booted = true;
+      } catch { /* reported as ready:false, logged at boot */ }
+      sendJson(res, 200, { ok: true, uptime: Math.round(process.uptime()), ready: booted });
+      return;
+    }
+
     await ready();
 
     ctx.sessionToken = ctx.cookies.sid || null;
@@ -305,11 +321,6 @@ async function handle(req, res) {
       return;
     }
 
-    // Liveness: no dependencies, answers even while the database is down.
-    if (pathname === '/health') {
-      sendJson(res, 200, { ok: true, uptime: Math.round(process.uptime()) });
-      return;
-    }
     // Readiness: proves the database is reachable before a load balancer
     // sends real traffic to this instance.
     if (pathname === '/ready') {

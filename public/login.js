@@ -348,7 +348,99 @@
     );
   }
 
-  if (path === '/mfa') mfaChallengeForm();
+
+  // --------------------------------------------------- first-admin setup
+  /**
+   * Claim the first administrator account.
+   *
+   * Reachable only while no staff account exists. The operator supplies the
+   * token they put in the server's environment themselves, so no credential
+   * ever has to be read out of a deployment log.
+   */
+  async function setupForm() {
+    let status;
+    try {
+      status = await api.get('/api/auth/setup');
+    } catch {
+      show(el('h1', { class: 'auth-title' }, 'Setup unavailable'),
+        el('p', { class: 'auth-sub' }, 'The server could not be reached.'));
+      return;
+    }
+
+    if (!status.setup_required) {
+      show(
+        el('h1', { class: 'auth-title' }, 'Already set up'),
+        el('p', { class: 'auth-sub' },
+          'This brokerage already has an administrator, so first-time setup is closed. Sign in, or use “Forgot password” if you cannot get in.'),
+        el('a', { class: 'btn block', href: '/login' }, 'Go to sign in'));
+      return;
+    }
+
+    if (!status.token_configured) {
+      show(
+        el('h1', { class: 'auth-title' }, 'One step on the server first'),
+        el('p', { class: 'auth-sub' },
+          'No setup token is configured, so this deployment cannot be claimed yet. Generate a random token, add it to the server environment as ADMIN_SETUP_TOKEN, redeploy, then come back to this page.'),
+        el('p', { class: 'auth-sub' },
+          'Generate one with: npm run keygen -- --setup-token'));
+      return;
+    }
+
+    const token = el('input', { type: 'password', autocomplete: 'off', required: true });
+    const email = el('input', { type: 'email', autocomplete: 'username', required: true });
+    const first = el('input', { type: 'text', autocomplete: 'given-name' });
+    const last = el('input', { type: 'text', autocomplete: 'family-name' });
+    const password = el('input', { type: 'password', autocomplete: 'new-password', required: true });
+    const confirm = el('input', { type: 'password', autocomplete: 'new-password', required: true });
+    const submit = el('button', { class: 'btn block', type: 'submit' }, 'Create administrator');
+
+    const form = el('form', {
+      onsubmit: async (e) => {
+        e.preventDefault();
+        setError('');
+        if (password.value !== confirm.value) { setError('The two passwords do not match.'); return; }
+        submit.disabled = true;
+        try {
+          await api.post('/api/auth/setup', {
+            token: token.value, email: email.value,
+            first_name: first.value, last_name: last.value, password: password.value,
+          });
+          show(
+            el('h1', { class: 'auth-title' }, 'Administrator created'),
+            el('p', { class: 'auth-sub' },
+              'Sign in now. You will be asked to set up two-step verification straight away — it is required for administrators and cannot be turned off.'),
+            el('p', { class: 'auth-sub' },
+              'Remove ADMIN_SETUP_TOKEN from your server environment now that it has been used.'),
+            el('a', { class: 'btn block', href: '/login' }, 'Sign in'));
+        } catch (err) {
+          // A wrong token and an already-claimed deployment answer alike.
+          setError(err.code === 'not_found'
+            ? 'That token was not accepted, or this deployment has already been set up.'
+            : err.message);
+          submit.disabled = false;
+        }
+      },
+    },
+      el('label', { class: 'field' }, el('span', null, 'Setup token'), token),
+      el('p', { class: 'hint' }, 'The value you placed in ADMIN_SETUP_TOKEN on the server.'),
+      el('label', { class: 'field' }, el('span', null, 'Your email address'), email),
+      el('div', { class: 'form-row cols-2' },
+        el('label', { class: 'field' }, el('span', null, 'First name'), first),
+        el('label', { class: 'field' }, el('span', null, 'Last name'), last)),
+      el('label', { class: 'field' }, el('span', null, 'Choose a password'), password),
+      el('label', { class: 'field' }, el('span', null, 'Confirm password'), confirm),
+      errorLine(),
+      submit);
+
+    show(
+      el('h1', { class: 'auth-title' }, 'Set up your brokerage'),
+      el('p', { class: 'auth-sub' },
+        'This creates the first administrator account. It works once, and only while no account exists.'),
+      form);
+  }
+
+  if (path === '/setup') setupForm();
+  else if (path === '/mfa') mfaChallengeForm();
   else if (path === '/mfa-setup') mfaSetupForm();
   else if (path === '/activate') tokenForm('activate');
   else if (path === '/reset') tokenForm('reset');

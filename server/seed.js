@@ -703,10 +703,22 @@ async function bootstrapAdmin() {
   const { hashPassword, validatePasswordStrength, generateTemporaryPassword } = require('./auth');
   const email = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
   if (!email) {
-    throw new Error(
-      'No administrator exists and ADMIN_EMAIL is not set. Set ADMIN_EMAIL (and optionally ' +
-      'ADMIN_PASSWORD) to create the first administrator — there is no default account.'
+    // Deliberately NOT fatal.
+    //
+    // This used to throw, which took the whole application down — every
+    // route, including the login page and the liveness probe — leaving an
+    // operator with a 500 and no way to see why. On a managed host that is
+    // the worst possible failure mode.
+    //
+    // Instead the app boots with no staff account and serves the one-time
+    // setup flow (POST /api/auth/setup), which is gated on a token the
+    // operator sets themselves. No account exists until they claim it, so
+    // this is not a default account and not a backdoor.
+    console.warn(
+      '[setup] No administrator exists yet. Set ADMIN_SETUP_TOKEN and claim the first ' +
+      'account at /setup, or set ADMIN_EMAIL to provision one at boot.'
     );
+    return null;
   }
 
   let password = process.env.ADMIN_PASSWORD;
