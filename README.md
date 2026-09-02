@@ -17,7 +17,7 @@ startup.
 
 ## Demo it in GitHub Codespaces
 
-[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/amirhosseinforouqi/ecosystem/tree/claude/mortgage-client-platform-xsxg4g)
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/amirhosseinforouqi/velocity/tree/claude/ecosystem-repos-velocity-migration-e53peb)
 
 Click the badge (or **Code** → **Codespaces** → **Create codespace on branch**).
 The container brings up PostgreSQL 16 alongside the app, generates a set of
