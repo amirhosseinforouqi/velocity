@@ -216,7 +216,7 @@ describe('Claude document review (audit finding C6)', () => {
   test('with the brokerage setting off, no document is sent to Anthropic', async () => {
     client = await helpers.signInFreshClient(ctx.base, creds.username, creds.temporary_password, CLIENT_PASSWORD);
     const docs = await client.get(`/api/client/files/${fileId}/documents`);
-    const target = docs.data.requests.find((r) => r.document_name === 'Government ID');
+    const target = docs.data.requests.find((r) => r.document_name === 'Two Pieces of Government ID');
 
     const before = claudeCalls.length;
     const up = await client.upload(`/api/client/requests/${target.id}/upload`, helpers.PDF, 'id.pdf');
@@ -234,7 +234,7 @@ describe('Claude document review (audit finding C6)', () => {
       value: { enabled: true, require_client_consent: true },
     });
     const docs = await client.get(`/api/client/files/${fileId}/documents`);
-    const target = docs.data.requests.find((r) => r.document_name === 'Notice of Assessment');
+    const target = docs.data.requests.find((r) => r.document_name === 'Notice of Assessment (2024 & 2025)');
 
     const before = claudeCalls.length;
     await client.upload(`/api/client/requests/${target.id}/upload`, helpers.PDF, 'noa.pdf');
@@ -259,7 +259,7 @@ describe('Claude document review (audit finding C6)', () => {
 
   test('with all three gates open: review runs via the project skill, and never blocks the upload', async () => {
     const docs = await client.get(`/api/client/files/${fileId}/documents`);
-    const t4 = docs.data.requests.find((r) => r.document_name === 'T4');
+    const t4 = docs.data.requests.find((r) => r.document_name === 'T4 Slips (2024 & 2025)');
     assert.ok(t4, 'T4 is on the checklist');
 
     const before = claudeCalls.length;
@@ -285,7 +285,7 @@ describe('Claude document review (audit finding C6)', () => {
     assert.equal(Buffer.from(docBlock.source.data, 'base64').toString('latin1'), helpers.PDF.toString('latin1'));
     assert.match(
       call.body.messages[0].content.find((b) => b.type === 'text').text,
-      /Expected document type[^"]*"T4"/,
+      /Expected document type[^"]*"T4 Slips \(2024 & 2025\)"/,
       'the expected checklist document type is passed to the model'
     );
 
@@ -329,7 +329,7 @@ describe('Claude document review (audit finding C6)', () => {
   test('withdrawing consent stops future reviews', async () => {
     await admin.post(`/api/broker/files/${fileId}/ai-consent`, { consent: false });
     const docs = await client.get(`/api/client/files/${fileId}/documents`);
-    const target = docs.data.requests.find((r) => r.document_name === 'Employment Letter');
+    const target = docs.data.requests.find((r) => r.document_name === 'Recent Job Letter');
     const before = claudeCalls.length;
     await client.upload(`/api/client/requests/${target.id}/upload`, helpers.PDF, 'letter.pdf');
     await runJobs();
@@ -354,7 +354,7 @@ describe('resilience', () => {
     claudeMode = 'fail-once';
 
     const docs = await client.get(`/api/client/files/${fileId}/documents`);
-    const stub = docs.data.requests.find((r) => r.document_name === 'Recent Pay Stub');
+    const stub = docs.data.requests.find((r) => r.document_name === 'Three Recent Pay Stubs');
     const up = await client.upload(`/api/client/requests/${stub.id}/upload`, helpers.PDF, 'paystub.pdf');
     assert.equal(up.status, 200, 'the upload still succeeds while Claude is down');
 
@@ -389,7 +389,7 @@ describe('resilience', () => {
   test('a permanently failed review can be retried by the broker', async () => {
     const db = require('../server/db');
     const docs = await admin.get(`/api/broker/files/${fileId}/documents`);
-    const t4 = docs.data.requests.find((r) => r.document_name === 'T4');
+    const t4 = docs.data.requests.find((r) => r.document_name === 'T4 Slips (2024 & 2025)');
     const reviewId = t4.ai_review.id;
     await db.run("UPDATE ai_reviews SET status = 'failed', attempts = 3, error = 'boom' WHERE id = ?", reviewId);
 

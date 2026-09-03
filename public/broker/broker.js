@@ -754,7 +754,7 @@ async function loadWizardChecklist() {
 
 const CATEGORY_LABEL = {
   identity: 'Identity', credit: 'Credit', income: 'Income / Tax',
-  property: 'Property', financial: 'Assets', corporate: 'Corporate', other: 'Other',
+  property: 'Property', financial: 'Assets & Banking', corporate: 'Corporate', other: 'Other',
 };
 
 function wizardStepDocuments() {
@@ -903,35 +903,46 @@ function wizardStepDetails() {
     first_name: el('input', { type: 'text', value: wiz.client.first_name || '' }),
     middle_name: el('input', { type: 'text', value: wiz.client.middle_name || '' }),
     last_name: el('input', { type: 'text', value: wiz.client.last_name || '' }),
-    preferred_name: el('input', { type: 'text', value: wiz.client.preferred_name || '', placeholder: 'What they like to be called' }),
     email: el('input', { type: 'email', value: wiz.client.email || '' }),
     phone: el('input', { type: 'tel', value: wiz.client.phone || '' }),
     dob: el('input', { type: 'date', value: wiz.client.dob || '' }),
     address: el('input', { type: 'text', value: wiz.client.address || '' }),
-    preferred_contact: el('select', null, [['email', 'Email'], ['phone', 'Phone call'], ['text', 'Text message'], ['portal', 'Portal messages']].map(([v, l]) => el('option', { value: v }, l))),
-    employer_name: el('input', { type: 'text', value: wiz.client.employer_name || '' }),
-    job_title: el('input', { type: 'text', value: wiz.client.job_title || '' }),
   };
+  // Money is typed and read with thousand separators — brokers work in
+  // hundreds of thousands and an unseparated 800000 is easy to misread. The
+  // digits are what gets sent; the separators are presentation only.
   const a = {
-    purchase_price: el('input', { type: 'number', step: '1000', placeholder: '800000' }),
-    down_payment: el('input', { type: 'number', step: '1000', placeholder: '160000' }),
-    mortgage_amount: el('input', { type: 'number', step: '1000' }),
-    property_address: el('input', { type: 'text' }),
+    purchase_price: moneyInput('800,000'),
+    down_payment_pct: el('input', { type: 'number', step: '0.5', min: '0', max: '100', placeholder: '20' }),
+    mortgage_amount: moneyInput(''),
     property_type: el('input', { type: 'text', placeholder: 'e.g. Detached, Condo' }),
     closing_date: el('input', { type: 'date' }),
     purpose: el('textarea', { placeholder: 'Anything worth noting about this application' }),
-    assigned_broker_id: el('select', null, BK.staff.map((s) =>
-      el('option', { value: s.id, selected: s.id === BK.me.user.id ? '' : undefined }, `${s.first_name} ${s.last_name}`))),
   };
-  const sendWelcome = el('input', { type: 'checkbox', checked: '' });
+  // The down payment is entered as a percentage and shown back in dollars, so
+  // there is no doubt about which of the two a number is.
+  const downPaymentNote = el('p', { class: 'faint' }, 'Enter the down payment as a percentage of the purchase price.');
 
-  const suggestAmount = () => {
-    const p = Number(a.purchase_price.value), d = Number(a.down_payment.value);
-    if (p > 0 && d >= 0 && !a.mortgage_amount.dataset.touched) a.mortgage_amount.value = Math.max(0, p - d);
+  const downPaymentAmount = () => {
+    const price = moneyValue(a.purchase_price);
+    const pct = Number(a.down_payment_pct.value);
+    if (!(price > 0) || !(pct >= 0)) return null;
+    return Math.round(price * Math.min(pct, 100) / 100);
   };
-  a.purchase_price.addEventListener('input', suggestAmount);
-  a.down_payment.addEventListener('input', suggestAmount);
+
+  const recalc = () => {
+    const price = moneyValue(a.purchase_price);
+    const down = downPaymentAmount();
+    downPaymentNote.textContent = down === null
+      ? 'Enter the down payment as a percentage of the purchase price.'
+      : `${fmtMoney(down)} of ${fmtMoney(price)}.`;
+    if (down !== null && !a.mortgage_amount.dataset.touched) setMoney(a.mortgage_amount, Math.max(0, price - down));
+  };
+  a.purchase_price.addEventListener('input', recalc);
+  a.down_payment_pct.addEventListener('input', recalc);
   a.mortgage_amount.addEventListener('input', () => { a.mortgage_amount.dataset.touched = '1'; });
+
+  const sendWelcome = el('input', { type: 'checkbox', checked: '' });
 
   const coHolder = el('div');
   function addCoApplicant() {
@@ -976,14 +987,12 @@ function wizardStepDetails() {
       application: {
         application_type_id: wiz.service.id,
         fthb: wiz.fthb,
-        purchase_price: a.purchase_price.value,
-        down_payment: a.down_payment.value,
-        mortgage_amount: a.mortgage_amount.value,
-        property_address: a.property_address.value,
+        purchase_price: moneyValue(a.purchase_price),
+        down_payment: downPaymentAmount(),
+        mortgage_amount: moneyValue(a.mortgage_amount),
         property_type: a.property_type.value,
         closing_date: a.closing_date.value,
         purpose: a.purpose.value,
-        assigned_broker_id: a.assigned_broker_id.value,
       },
       checklist: wiz.checklist.map((d) => ({
         document_type_id: d.document_type_id,
@@ -1050,29 +1059,22 @@ function wizardStepDetails() {
         el('label', { class: 'field' }, el('span', null, 'First name *'), f.first_name),
         el('label', { class: 'field' }, el('span', null, 'Middle name'), f.middle_name),
         el('label', { class: 'field' }, el('span', null, 'Last name *'), f.last_name)),
-      el('div', { class: 'form-row cols-2' },
-        el('label', { class: 'field' }, el('span', null, 'Preferred name'), f.preferred_name),
-        el('label', { class: 'field' }, el('span', null, 'Date of birth'), f.dob)),
-      el('div', { class: 'form-row cols-2' },
+      el('div', { class: 'form-row cols-3' },
+        el('label', { class: 'field' }, el('span', null, 'Date of birth'), f.dob),
         el('label', { class: 'field' }, el('span', null, 'Email *'), f.email),
         el('label', { class: 'field' }, el('span', null, 'Mobile phone'), f.phone)),
       el('p', { class: 'faint' }, 'The email address becomes the client\'s portal username.'),
-      el('label', { class: 'field' }, el('span', null, 'Current address'), f.address),
-      el('div', { class: 'form-row cols-3' },
-        el('label', { class: 'field' }, el('span', null, 'Preferred contact'), f.preferred_contact),
-        el('label', { class: 'field' }, el('span', null, 'Employer'), f.employer_name),
-        el('label', { class: 'field' }, el('span', null, 'Job title'), f.job_title))),
+      el('label', { class: 'field' }, el('span', null, 'Current address'), f.address)),
     el('div', { class: 'card' },
       el('h3', null, 'Application'),
       el('div', { class: 'form-row cols-3' },
         el('label', { class: 'field' }, el('span', null, 'Purchase price'), a.purchase_price),
-        el('label', { class: 'field' }, el('span', null, 'Down payment'), a.down_payment),
+        el('label', { class: 'field' }, el('span', null, 'Down payment (%)'), a.down_payment_pct),
         el('label', { class: 'field' }, el('span', null, 'Mortgage amount'), a.mortgage_amount)),
-      el('label', { class: 'field' }, el('span', null, 'Property address'), a.property_address),
-      el('div', { class: 'form-row cols-3' },
+      downPaymentNote,
+      el('div', { class: 'form-row cols-2' },
         el('label', { class: 'field' }, el('span', null, 'Property type'), a.property_type),
-        el('label', { class: 'field' }, el('span', null, 'Closing date'), a.closing_date),
-        el('label', { class: 'field' }, el('span', null, 'Assigned broker'), a.assigned_broker_id)),
+        el('label', { class: 'field' }, el('span', null, 'Closing date'), a.closing_date)),
       el('label', { class: 'field' }, el('span', null, 'Notes'), a.purpose)),
     coHolder,
     el('div', { class: 'card' },

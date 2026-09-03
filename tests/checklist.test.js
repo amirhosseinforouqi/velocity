@@ -52,7 +52,7 @@ after(async () => { if (ctx) await ctx.stop(); });
 describe('configuration is data, not code', () => {
   test('employment statuses are seeded and editable', async () => {
     const keys = meta.employment_statuses.map((s) => s.key);
-    for (const expected of ['employee', 'self_employed', 'corporation_owner', 'commissioned', 'contract_worker', 'retired']) {
+    for (const expected of ['employee', 'self_employed']) {
       assert.ok(keys.includes(expected), `employment status ${expected} available`);
     }
 
@@ -112,24 +112,83 @@ describe('configuration is data, not code', () => {
 });
 
 describe('the rule engine (layer 2)', () => {
-  test('service + employment produces the right default checklist', async () => {
+  test('service + employment produces the brokerage intake list, in order', async () => {
+    // Order is the point, not just membership: this is the list a client reads
+    // top to bottom, and it is authored as rule order + item order within a
+    // rule. A reordering here is a change the brokerage would notice.
     const cases = [
-      ['purchase', 'employee', ['Government ID', 'T4', 'Recent Pay Stub', 'Employment Letter', 'Notice of Assessment', 'Purchase Agreement', 'Down Payment Verification']],
-      ['purchase', 'self_employed', ['Government ID', 'T1 General', 'Notice of Assessment', 'Business Financial Statements', 'Purchase Agreement']],
-      ['refinance', 'employee', ['Government ID', 'T4', 'Existing Mortgage Statement', 'Property Tax Bill']],
-      ['builder_purchase', 'employee', ['Government ID', 'T4', 'Purchase Agreement']],
-      ['business_loan', 'self_employed', ['Government ID', 'Articles of Incorporation', 'Business Financial Statements']],
+      ['purchase', 'employee', [
+        'Equifax Credit Report',
+        'Two Pieces of Government ID',
+        'Recent Job Letter',
+        'Three Recent Pay Stubs',
+        'T4 Slips (2024 & 2025)',
+        'T1 General (2024 & 2025)',
+        'Notice of Assessment (2024 & 2025)',
+        'Bank Statements — Last 3 Months',
+      ]],
+      ['purchase', 'self_employed', [
+        'Equifax Credit Report',
+        'Two Pieces of Government ID',
+        'Breakdown of Assets',
+        'Business Bank Statements — Last 12 Months',
+        'Personal Bank Statements — Last 6 Months',
+        'T1 General (2024 & 2025)',
+        'Notice of Assessment (2024 & 2025)',
+        'T2 Corporate Income Tax Returns (2024 & 2025)',
+        'Corporate Notice of Assessment (2024 & 2025)',
+        'Certificate of Incorporation',
+      ]],
+      // Refinance adds to the employment list rather than replacing it.
+      ['refinance', 'employee', [
+        'Equifax Credit Report',
+        'Two Pieces of Government ID',
+        'Recent Job Letter',
+        'Three Recent Pay Stubs',
+        'T4 Slips (2024 & 2025)',
+        'T1 General (2024 & 2025)',
+        'Notice of Assessment (2024 & 2025)',
+        'Bank Statements — Last 3 Months',
+        'Current Mortgage Statement',
+        'Final Property Tax Bill 2026',
+      ]],
     ];
     for (const [typeKey, employment, expected] of cases) {
       const res = await admin.get(
         `/api/broker/checklist-preview?application_type_id=${typeByKey(typeKey).id}&employment_type=${employment}`
       );
       assert.equal(res.status, 200);
-      const names = res.data.documents.map((d) => d.document_name);
-      for (const doc of expected) {
-        assert.ok(names.includes(doc), `${typeKey} + ${employment} → expected "${doc}", got: ${names.join(', ')}`);
-      }
+      assert.deepEqual(res.data.documents.map((d) => d.document_name), expected,
+        `${typeKey} + ${employment}`);
     }
+  });
+
+  test('an older deployment is migrated without losing its history', async () => {
+    // A brokerage that has been running since before the intake list was
+    // rewritten still has files pointing at the old services and employment
+    // statuses. Those rows must survive the upgrade — deactivated, so nobody
+    // picks them again, but resolvable so old files still render.
+    const db = require('../server/db');
+    const seed = require('../server/seed');
+
+    await db.run("INSERT INTO application_types (key, name, active, sort) VALUES ('builder_purchase', 'Builder Purchase', 1, 900) ON CONFLICT (key) DO UPDATE SET active = 1");
+    await db.run("INSERT INTO employment_statuses (key, name, active, sort) VALUES ('retired', 'Retired', 1, 900) ON CONFLICT (key) DO UPDATE SET active = 1");
+    await db.setSetting('catalog_upgrades', []);
+
+    await seed.applyCatalogUpgrades();
+
+    const type = await db.get("SELECT active FROM application_types WHERE key = 'builder_purchase'");
+    assert.ok(type, 'the old service row is still there');
+    assert.equal(type.active, 0, 'but it is no longer offered');
+    const status = await db.get("SELECT active FROM employment_statuses WHERE key = 'retired'");
+    assert.ok(status);
+    assert.equal(status.active, 0);
+
+    // And the upgrade is a no-op the second time.
+    const before = await db.get('SELECT COUNT(*)::int AS n FROM document_rules');
+    await seed.applyCatalogUpgrades();
+    const after = await db.get('SELECT COUNT(*)::int AS n FROM document_rules');
+    assert.equal(after.n, before.n, 'running it again changes nothing');
   });
 
   test('previewing writes nothing', async () => {
@@ -142,15 +201,20 @@ describe('the rule engine (layer 2)', () => {
     assert.equal(requestsAfter.n, requestsBefore.n);
   });
 
-  test('the first-time-buyer condition combines with service and employment', async () => {
+  test('the first-time-buyer flag is recorded without changing the document list', async () => {
+    // The flag is still real data on the file, but the brokerage's intake list
+    // is the same either way — it is not a fourth service.
     const plain = await admin.get(
       `/api/broker/checklist-preview?application_type_id=${typeByKey('purchase').id}&employment_type=employee`
     );
     const fthb = await admin.get(
       `/api/broker/checklist-preview?application_type_id=${typeByKey('purchase').id}&employment_type=employee&fthb=1`
     );
-    assert.ok(!plain.data.documents.map((d) => d.document_name).includes('Gift Letter'));
-    assert.ok(fthb.data.documents.map((d) => d.document_name).includes('Gift Letter'));
+    assert.equal(fthb.status, 200);
+    assert.deepEqual(
+      fthb.data.documents.map((d) => d.document_name),
+      plain.data.documents.map((d) => d.document_name)
+    );
   });
 
   test('a brokerage can edit its own rules', async () => {
@@ -173,11 +237,13 @@ describe('one client\'s checklist is theirs alone (layer 3)', () => {
     const preview = await admin.get(
       `/api/broker/checklist-preview?application_type_id=${typeByKey('purchase').id}&employment_type=employee`
     );
-    const bankStatements = meta.document_types.find((d) => d.name === 'Bank Statements');
+    // Something the employee default does not already include, so the
+    // addition is genuinely John's rather than an inherited default.
+    const extra = meta.document_types.find((d) => d.name === 'Home Insurance');
     const customized = preview.data.documents
-      .filter((d) => d.document_name !== 'Employment Letter')
+      .filter((d) => d.document_name !== 'Recent Job Letter')
       .map((d) => ({ document_type_id: d.document_type_id, requirement: d.requirement }))
-      .concat([{ document_type_id: bankStatements.id, requirement: 'required', instructions: 'Last 12 months, please.' }]);
+      .concat([{ document_type_id: extra.id, requirement: 'required', instructions: 'Binder page only, please.' }]);
 
     const john = await createClient({
       first: 'John', last: 'Smith', email: 'john.custom@test.local',
@@ -185,14 +251,14 @@ describe('one client\'s checklist is theirs alone (layer 3)', () => {
     });
 
     const johnDocs = await checklistNames(john.file.id);
-    assert.ok(!johnDocs.includes('Employment Letter'), 'the removed document is absent for John');
-    assert.ok(johnDocs.includes('Bank Statements'), 'the added document is present for John');
-    assert.ok(johnDocs.includes('T4'), 'untouched defaults survive');
+    assert.ok(!johnDocs.includes('Recent Job Letter'), 'the removed document is absent for John');
+    assert.ok(johnDocs.includes('Home Insurance'), 'the added document is present for John');
+    assert.ok(johnDocs.includes('T4 Slips (2024 & 2025)'), 'untouched defaults survive');
 
     const docs = await admin.get(`/api/broker/files/${john.file.id}/documents`);
     assert.equal(
-      docs.data.requests.find((r) => r.document_name === 'Bank Statements').client_message,
-      'Last 12 months, please.'
+      docs.data.requests.find((r) => r.document_name === 'Home Insurance').client_message,
+      'Binder page only, please.'
     );
 
     const sarah = await createClient({
@@ -200,8 +266,8 @@ describe('one client\'s checklist is theirs alone (layer 3)', () => {
       typeKey: 'purchase', employment: 'employee',
     });
     const sarahDocs = await checklistNames(sarah.file.id);
-    assert.ok(sarahDocs.includes('Employment Letter'), 'Sarah still gets the global default John opted out of');
-    assert.ok(!sarahDocs.includes('Bank Statements'), 'Sarah does not inherit John\'s custom addition');
+    assert.ok(sarahDocs.includes('Recent Job Letter'), 'Sarah still gets the global default John opted out of');
+    assert.ok(!sarahDocs.includes('Home Insurance'), 'Sarah does not inherit John\'s custom addition');
   });
 
   test('the global rules themselves are never touched by a client edit', async () => {
@@ -209,7 +275,7 @@ describe('one client\'s checklist is theirs alone (layer 3)', () => {
       `/api/broker/checklist-preview?application_type_id=${typeByKey('purchase').id}&employment_type=employee`
     );
     assert.ok(
-      preview.data.documents.map((d) => d.document_name).includes('Employment Letter'),
+      preview.data.documents.map((d) => d.document_name).includes('Recent Job Letter'),
       'the brokerage default is unchanged after a per-client removal'
     );
   });
@@ -222,29 +288,29 @@ describe('one client\'s checklist is theirs alone (layer 3)', () => {
     const fileId = client.file.id;
 
     const docs = await admin.get(`/api/broker/files/${fileId}/documents`);
-    const t4 = docs.data.requests.find((r) => r.document_name === 'T4');
+    const t4 = docs.data.requests.find((r) => r.document_name === 'T4 Slips (2024 & 2025)');
     assert.ok(t4);
     assert.equal((await admin.del(`/api/broker/requests/${t4.id}`)).status, 200);
-    assert.ok(!(await checklistNames(fileId)).includes('T4'), 'T4 removed');
+    assert.ok(!(await checklistNames(fileId)).includes('T4 Slips (2024 & 2025)'), 'T4 removed');
 
     // Any edit re-runs the rule engine — the removal must survive it.
     assert.equal((await admin.patch(`/api/broker/files/${fileId}`, { purchase_price: 900000 })).status, 200);
-    assert.ok(!(await checklistNames(fileId)).includes('T4'), 'T4 stays removed after re-sync');
+    assert.ok(!(await checklistNames(fileId)).includes('T4 Slips (2024 & 2025)'), 'T4 stays removed after re-sync');
 
     const exclusions = await admin.get(`/api/broker/files/${fileId}/checklist/exclusions`);
-    assert.ok(exclusions.data.exclusions.some((e) => e.document_name === 'T4'), 'the removal is recorded and visible');
+    assert.ok(exclusions.data.exclusions.some((e) => e.document_name === 'T4 Slips (2024 & 2025)'), 'the removal is recorded and visible');
 
     const restore = await admin.post(`/api/broker/files/${fileId}/checklist/restore`, {
       document_type_id: t4.document_type_id,
     });
     assert.equal(restore.status, 200);
-    assert.ok((await checklistNames(fileId)).includes('T4'), 'and can be restored deliberately');
+    assert.ok((await checklistNames(fileId)).includes('T4 Slips (2024 & 2025)'), 'and can be restored deliberately');
 
     const other = await createClient({
       first: 'Evan', last: 'Ng', email: 'evan@test.local',
       typeKey: 'purchase', employment: 'employee',
     });
-    assert.ok((await checklistNames(other.file.id)).includes('T4'), 'the global default was unaffected throughout');
+    assert.ok((await checklistNames(other.file.id)).includes('T4 Slips (2024 & 2025)'), 'the global default was unaffected throughout');
   });
 
   test('a document with uploads is waived rather than deleted', async () => {
@@ -295,7 +361,7 @@ describe('one client\'s checklist is theirs alone (layer 3)', () => {
     const names = (await client.get(`/api/client/files/${created.file.id}/documents`)).data.requests
       .map((r) => r.document_name);
     assert.ok(!names.includes('Employment Letter'), 'the client does not see the removed document');
-    assert.ok(names.includes('T4'), 'the client sees what remains');
+    assert.ok(names.includes('T4 Slips (2024 & 2025)'), 'the client sees what remains');
   });
 });
 

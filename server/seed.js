@@ -1,6 +1,6 @@
 'use strict';
 
-const { run, get, getSetting, setSetting } = require('./db');
+const { run, get, all, getSetting, setSetting } = require('./db');
 const { now } = require('./util');
 
 /** Every permission key known to the platform. */
@@ -165,13 +165,16 @@ const DEFAULT_SETTINGS = {
 const EMPLOYMENT_STATUSES = [
   ['employee', 'Employee'],
   ['self_employed', 'Self-Employed'],
-  ['corporation_owner', 'Corporation Owner'],
-  ['commissioned', 'Commissioned'],
-  ['contract_worker', 'Contract Worker'],
-  ['retired', 'Retired'],
-  ['unemployed', 'Not Employed'],
-  ['other', 'Other'],
 ];
+
+/**
+ * Statuses and services that shipped in earlier versions and are no longer
+ * offered. They are deactivated rather than deleted: files created under them
+ * still reference the row, and an admin can turn any of them back on under
+ * Settings.
+ */
+const RETIRED_EMPLOYMENT_STATUSES = ['corporation_owner', 'commissioned', 'contract_worker', 'retired', 'unemployed', 'other'];
+const RETIRED_APPLICATION_TYPES = ['builder_purchase', 'fthb'];
 
 const STAGES = [
   ['new_inquiry',        'New Inquiry',              'Getting started',                'We have received your information and will be in touch shortly.', 1, '#8b5cf6', 0, 0],
@@ -194,32 +197,47 @@ const STAGES = [
 
 const APPLICATION_TYPES = [
   ['purchase', 'Purchase'],
-  ['builder_purchase', 'Builder Purchase'],
   ['refinance', 'Refinance'],
-  ['fthb', 'First-Time Home Buyer'],
   ['business_loan', 'Business Loan'],
 ];
 
 const DOCUMENT_TYPES = [
   // key, name, category, description
-  ['government_id', 'Government ID', 'identity', 'A valid government-issued photo ID (both sides if applicable).'],
-  ['t4', 'T4', 'income', 'Your most recent T4 slip.'],
-  ['pay_stub', 'Recent Pay Stub', 'income', 'A pay stub from within the last 30 days.'],
-  ['employment_letter', 'Employment Letter', 'income', 'A letter from your employer confirming position, tenure and income.'],
-  ['noa', 'Notice of Assessment', 'income', 'Your most recent CRA Notice of Assessment.'],
-  ['t1_general', 'T1 General', 'income', 'Your most recent T1 General tax return.'],
+  // The order here is the order a client sees, so it follows the brokerage's
+  // own intake list rather than the alphabet.
+  ['equifax_credit_report', 'Equifax Credit Report', 'credit', 'Full report downloaded from Equifax Canada.'],
+  ['government_id', 'Two Pieces of Government ID', 'identity', "Passport, driver's licence, or PR card. Health cards are not accepted."],
+
+  // Employee income
+  ['employment_letter', 'Recent Job Letter', 'income', 'Signed and dated, stating your position, salary or hourly rate, and start date.'],
+  ['pay_stub', 'Three Recent Pay Stubs', 'income', 'Your three most recent pay stubs.'],
+  ['t4', 'T4 Slips (2024 & 2025)', 'income', 'Your T4 slips for both 2024 and 2025.'],
+  ['t1_general', 'T1 General (2024 & 2025)', 'income', 'Your complete T1 General return for both 2024 and 2025.'],
+  ['noa', 'Notice of Assessment (2024 & 2025)', 'income', 'Your CRA Notice of Assessment for both 2024 and 2025.'],
+  ['bank_statements', 'Bank Statements — Last 3 Months', 'financial', 'Your last three months of bank statements.'],
+
+  // Self-employed
+  ['asset_breakdown', 'Breakdown of Assets', 'financial', 'Vehicles: year, make, model and estimated market value. Investments: balance details for TFSA, RRSP, savings and other liquid accounts.'],
+  ['business_bank_statements', 'Business Bank Statements — Last 12 Months', 'financial', 'Your last twelve months of business bank statements.'],
+  ['personal_bank_statements', 'Personal Bank Statements — Last 6 Months', 'financial', 'Your last six months of personal bank statements.'],
+  ['t2_corporate', 'T2 Corporate Income Tax Returns (2024 & 2025)', 'corporate', 'Your corporation\'s T2 returns for both 2024 and 2025.'],
+  ['corporate_noa', 'Corporate Notice of Assessment (2024 & 2025)', 'corporate', 'The CRA Notice of Assessment issued to your corporation for both 2024 and 2025.'],
+  ['certificate_of_incorporation', 'Certificate of Incorporation', 'corporate', 'The certificate of incorporation for your business.'],
+
+  // Refinance
+  ['mortgage_statement', 'Current Mortgage Statement', 'property', 'Your most recent statement for the mortgage being refinanced.'],
+  ['property_tax_bill', 'Final Property Tax Bill 2026', 'property', 'The final (not interim) property tax bill for 2026.'],
+
+  // Still in the catalog so a broker can add them to an individual file, but
+  // no longer pulled in by any default rule.
   ['purchase_agreement', 'Purchase Agreement', 'property', 'The fully signed Agreement of Purchase and Sale.'],
   ['mls_listing', 'MLS Listing', 'property', 'The MLS listing for the property.'],
   ['down_payment_verification', 'Down Payment Verification', 'financial', '90-day history of the account(s) holding your down payment.'],
   ['gift_letter', 'Gift Letter', 'financial', 'A signed gift letter if part of your down payment is a gift.'],
-  ['bank_statements', 'Bank Statements', 'financial', 'Recent bank statements.'],
-  ['mortgage_statement', 'Existing Mortgage Statement', 'property', 'Your most recent mortgage statement.'],
-  ['property_tax_bill', 'Property Tax Bill', 'property', 'Your most recent property tax bill.'],
   ['home_insurance', 'Home Insurance', 'property', 'Proof of home insurance.'],
   ['void_cheque', 'Void Cheque / PAD Form', 'financial', 'A void cheque or pre-authorized debit form.'],
   ['business_financials', 'Business Financial Statements', 'financial', 'Business financial statements for the last 2 years.'],
-  ['articles_of_incorporation', 'Articles of Incorporation', 'financial', 'Articles of incorporation for your business.'],
-  ['business_bank_statements', 'Business Bank Statements', 'financial', 'Business bank statements for the last 6 months.'],
+  ['articles_of_incorporation', 'Articles of Incorporation', 'corporate', 'Articles of incorporation for your business.'],
 ];
 
 /**
@@ -231,37 +249,37 @@ const DOCUMENT_TYPES = [
  */
 const DOCUMENT_RULES = [
   {
-    name: 'All applications — identification',
+    name: 'All applications — credit & identification',
     conditions: {},
-    items: [['government_id', 'required', 1, null]],
-  },
-  {
-    name: 'Purchase — property & down payment',
-    conditions: { application_type_keys: ['purchase', 'builder_purchase', 'fthb'] },
     items: [
-      ['purchase_agreement', 'required', 0, null],
-      ['down_payment_verification', 'required', 0, null],
-      ['mls_listing', 'optional', 0, null],
+      ['equifax_credit_report', 'required', 1, null],
+      ['government_id', 'required', 1, null],
     ],
   },
   {
-    name: 'Employees — income documents',
+    name: 'Employees — income & banking',
     conditions: { employment_types: ['employee'] },
     items: [
-      ['t4', 'required', 1, null],
-      ['pay_stub', 'required', 1, 60],
       ['employment_letter', 'required', 1, 90],
+      ['pay_stub', 'required', 1, 60],
+      ['t4', 'required', 1, null],
+      ['t1_general', 'required', 1, null],
       ['noa', 'required', 1, null],
+      ['bank_statements', 'required', 1, null],
     ],
   },
   {
-    name: 'Self-employed — income documents',
+    name: 'Self-employed — assets, banking, tax & corporate',
     conditions: { employment_types: ['self_employed'] },
     items: [
+      ['asset_breakdown', 'required', 1, null],
+      ['business_bank_statements', 'required', 1, null],
+      ['personal_bank_statements', 'required', 1, null],
       ['t1_general', 'required', 1, null],
       ['noa', 'required', 1, null],
-      ['business_financials', 'required', 1, null],
-      ['business_bank_statements', 'optional', 1, null],
+      ['t2_corporate', 'required', 1, null],
+      ['corporate_noa', 'required', 1, null],
+      ['certificate_of_incorporation', 'required', 1, null],
     ],
   },
   {
@@ -270,13 +288,7 @@ const DOCUMENT_RULES = [
     items: [
       ['mortgage_statement', 'required', 0, null],
       ['property_tax_bill', 'required', 0, null],
-      ['home_insurance', 'optional', 0, null],
     ],
-  },
-  {
-    name: 'First-time home buyers',
-    conditions: { fthb: true },
-    items: [['gift_letter', 'optional', 0, null]],
   },
   {
     name: 'Business loans',
@@ -284,10 +296,10 @@ const DOCUMENT_RULES = [
     items: [
       ['articles_of_incorporation', 'required', 0, null],
       ['business_financials', 'required', 0, null],
-      ['business_bank_statements', 'required', 0, null],
     ],
   },
 ];
+
 
 const EMAIL_TEMPLATES = [
   {
@@ -528,21 +540,7 @@ async function seedIfNeeded() {
 
   // Document rules
   if (!(await get('SELECT id FROM document_rules LIMIT 1'))) {
-    for (const rule of DOCUMENT_RULES) {
-      const ruleRow = await get(
-        'INSERT INTO document_rules (name, active, conditions, created_at, updated_at) VALUES (?, 1, ?, ?, ?) RETURNING id',
-        rule.name, JSON.stringify(rule.conditions), now(), now()
-      );
-      const ruleId = ruleRow.id;
-      for (const [docKey, requirement, perApplicant, expiresDays] of rule.items) {
-        const doc = await get('SELECT id FROM document_types WHERE key = ?', docKey);
-        if (!doc) continue;
-        await run(
-          'INSERT INTO document_rule_items (rule_id, document_type_id, requirement, per_applicant, expires_days) VALUES (?, ?, ?, ?, ?)',
-          ruleId, doc.id, requirement, perApplicant, expiresDays
-        );
-      }
-    }
+    await insertDocumentRules();
   }
 
   // Email templates
@@ -558,6 +556,7 @@ async function seedIfNeeded() {
   await seedLenders();
   await seedWorkflowRules();
   await applyPermissionUpgrades();
+  await applyCatalogUpgrades();
   await bootstrapAdmin();
 }
 
@@ -668,6 +667,100 @@ async function seedWorkflowRules() {
   }
 }
 
+/**
+ * Catalog upgrades for deployments that were seeded before the intake list was
+ * rewritten.
+ *
+ * The seed blocks above only fire on an empty table, so an existing brokerage
+ * would keep the old services, employment statuses and document rules forever.
+ * This brings those in line, once, and records that it ran.
+ *
+ * It is deliberately conservative: nothing is deleted. Retired services and
+ * employment statuses are deactivated so historical files still resolve their
+ * row, retired documents stay in the catalog so a broker can still add one to
+ * an individual file by hand, and only rules this file has ever authored are
+ * replaced — a rule an admin wrote themselves is left alone.
+ */
+const RETIRED_DOCUMENT_RULES = [
+  'All applications — identification',
+  'Business loans',
+  'Purchase — property & down payment',
+  'Employees — income documents',
+  'Self-employed — income documents',
+  'Refinance — property documents',
+  'First-time home buyers',
+];
+
+async function applyCatalogUpgrades() {
+  const applied = await getSetting('catalog_upgrades', []);
+  if (applied.includes('intake_list_v2')) return;
+
+  for (const [i, [key, name]] of APPLICATION_TYPES.entries()) {
+    await run(
+      `INSERT INTO application_types (key, name, active, sort) VALUES (?, ?, 1, ?)
+       ON CONFLICT (key) DO UPDATE SET name = EXCLUDED.name, active = 1, sort = EXCLUDED.sort`,
+      key, name, (i + 1) * 10
+    );
+  }
+  for (const key of RETIRED_APPLICATION_TYPES) {
+    await run('UPDATE application_types SET active = 0 WHERE key = ?', key);
+  }
+
+  for (const [i, [key, name]] of EMPLOYMENT_STATUSES.entries()) {
+    await run(
+      `INSERT INTO employment_statuses (key, name, active, sort) VALUES (?, ?, 1, ?)
+       ON CONFLICT (key) DO UPDATE SET name = EXCLUDED.name, active = 1, sort = EXCLUDED.sort`,
+      key, name, (i + 1) * 10
+    );
+  }
+  for (const key of RETIRED_EMPLOYMENT_STATUSES) {
+    await run('UPDATE employment_statuses SET active = 0 WHERE key = ?', key);
+  }
+
+  for (const [i, [key, name, category, description]] of DOCUMENT_TYPES.entries()) {
+    await run(
+      `INSERT INTO document_types (key, name, category, description, active, sort)
+       VALUES (?, ?, ?, ?, 1, ?)
+       ON CONFLICT (key) DO UPDATE
+          SET name = EXCLUDED.name, category = EXCLUDED.category,
+              description = EXCLUDED.description, active = 1, sort = EXCLUDED.sort`,
+      key, name, category, description, (i + 1) * 10
+    );
+  }
+
+  // Rules are replaced rather than edited: their item order is what decides the
+  // order the client sees, and editing in place cannot express a reordering.
+  const replaceable = [...RETIRED_DOCUMENT_RULES, ...DOCUMENT_RULES.map((r) => r.name)];
+  for (const name of replaceable) {
+    const rows = await all('SELECT id FROM document_rules WHERE name = ?', name);
+    for (const row of rows) {
+      await run('DELETE FROM document_rule_items WHERE rule_id = ?', row.id);
+      await run('DELETE FROM document_rules WHERE id = ?', row.id);
+    }
+  }
+  await insertDocumentRules();
+
+  await setSetting('catalog_upgrades', [...applied, 'intake_list_v2']);
+}
+
+/** Insert DOCUMENT_RULES in order; item order within a rule is the client's order. */
+async function insertDocumentRules() {
+  for (const rule of DOCUMENT_RULES) {
+    const ruleRow = await get(
+      'INSERT INTO document_rules (name, active, conditions, created_at, updated_at) VALUES (?, 1, ?, ?, ?) RETURNING id',
+      rule.name, JSON.stringify(rule.conditions), now(), now()
+    );
+    for (const [docKey, requirement, perApplicant, expiresDays] of rule.items) {
+      const doc = await get('SELECT id FROM document_types WHERE key = ?', docKey);
+      if (!doc) continue;
+      await run(
+        'INSERT INTO document_rule_items (rule_id, document_type_id, requirement, per_applicant, expires_days) VALUES (?, ?, ?, ?, ?)',
+        ruleRow.id, doc.id, requirement, perApplicant, expiresDays
+      );
+    }
+  }
+}
+
 async function applyPermissionUpgrades() {
   const applied = await getSetting('permission_upgrades', []);
   const pending = Object.entries(PERMISSION_UPGRADES).filter(([name]) => !applied.includes(name));
@@ -754,6 +847,7 @@ module.exports = {
   seedIfNeeded,
   bootstrapAdmin,
   applyPermissionUpgrades,
+  applyCatalogUpgrades,
   ALL_PERMISSIONS,
   DEFAULT_ROLE_PERMISSIONS,
   PERMISSION_UPGRADES,

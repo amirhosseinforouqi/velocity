@@ -36,7 +36,8 @@ function applicantMatches(conditions, applicant) {
 
 /** Evaluate the global rules for an arbitrary service + applicant set. */
 async function evaluateRules({ file, typeKey, applicants }) {
-  const rules = await all('SELECT * FROM document_rules WHERE active = 1');
+  // Rule order, then item order within a rule, is the order the client sees.
+  const rules = await all('SELECT * FROM document_rules WHERE active = 1 ORDER BY id');
 
   const desired = new Map();
   const upsert = (docTypeId, applicantId, requirement, expiresDays, ruleId) => {
@@ -56,7 +57,7 @@ async function evaluateRules({ file, typeKey, applicants }) {
   for (const rule of rules) {
     const conditions = parseJsonSafe(rule.conditions, {});
     if (!ruleMatchesFile(conditions, file, typeKey)) continue;
-    const items = await all('SELECT * FROM document_rule_items WHERE rule_id = ?', rule.id);
+    const items = await all('SELECT * FROM document_rule_items WHERE rule_id = ? ORDER BY id', rule.id);
     const hasApplicantCondition = Array.isArray(conditions.employment_types) && conditions.employment_types.length > 0;
 
     for (const item of items) {

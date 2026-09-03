@@ -97,7 +97,7 @@ describe('scenario 3 — the rule engine decides what is needed', () => {
   test('an employed purchaser gets the employee document set', async () => {
     const docs = await admin.get(`/api/broker/files/${fileId}/documents`);
     const names = docs.data.requests.map((r) => r.document_name);
-    for (const expected of ['Government ID', 'Recent Pay Stub', 'Purchase Agreement', 'Down Payment Verification']) {
+    for (const expected of ['Equifax Credit Report', 'Two Pieces of Government ID', 'Three Recent Pay Stubs', 'Bank Statements — Last 3 Months']) {
       assert.ok(names.includes(expected), `expected "${expected}" in ${names.join(', ')}`);
     }
   });
@@ -112,7 +112,7 @@ describe('scenario 3 — the rule engine decides what is needed', () => {
     assert.ok(added.data.checklist_sync.added > 0, 'new applicant, new documents');
     const after = (await admin.get(`/api/broker/files/${fileId}/documents`)).data.requests;
     const names = after.map((r) => r.document_name);
-    assert.ok(names.includes('T1 General'), 'self-employed documents were added');
+    assert.ok(names.includes('Certificate of Incorporation'), 'self-employed documents were added');
     assert.ok(after.length > before);
   });
 });
@@ -247,14 +247,14 @@ describe('scenario 7 — messaging', () => {
     assert.ok(inbox.data.messages.some((m) => m.body.includes('bonus letter')));
 
     const reply = await admin.post(`/api/broker/files/${fileId}/messages`, {
-      body: 'Yes please — upload it under Employment Letter.',
+      body: 'Yes please — upload it under Recent Job Letter.',
     });
     assert.equal(reply.status, 200);
 
     const clientView = await client.get(`/api/client/files/${fileId}/messages`);
     const bodies = clientView.data.messages.map((m) => m.body);
     assert.ok(bodies.some((b) => b.includes('bonus letter')));
-    assert.ok(bodies.some((b) => b.includes('Employment Letter')));
+    assert.ok(bodies.some((b) => b.includes('Recent Job Letter')));
   });
 
   test('unread client messages show up on the broker dashboard', async () => {

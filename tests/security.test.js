@@ -34,12 +34,16 @@ before(async () => {
   ctx = await helpers.startTestServer('security');
   admin = await helpers.signInAdmin(ctx.base);
 
+  // A refinance, so this file has both per-applicant documents (credit, ID,
+  // income) and file-level ones (the mortgage statement and tax bill belong to
+  // the property, not to a borrower) — isolation is tested against both.
+  const refinance = (await admin.get('/api/settings/meta')).data.application_types.find((t) => t.key === 'refinance');
   const created = await admin.post('/api/broker/clients', {
     client: {
       first_name: 'Alice', last_name: 'Anderson', email: 'alice@test.local',
       phone: '416-555-0101', employment_type: 'employee',
     },
-    application: { application_type_id: 1, purchase_price: 700000, mortgage_amount: 560000, fthb: true },
+    application: { application_type_id: refinance.id, purchase_price: 700000, mortgage_amount: 560000, fthb: true },
     co_applicants: [{
       first_name: 'Adam', last_name: 'Anderson', email: 'adam@test.local',
       role: 'co_borrower', employment_type: 'employee', invite: true,

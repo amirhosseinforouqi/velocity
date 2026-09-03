@@ -89,6 +89,39 @@ function fmtMoney(n) {
   return new Intl.NumberFormat('en-CA', { style: 'currency', currency: 'CAD', maximumFractionDigits: 0 }).format(n);
 }
 
+/**
+ * A text input that keeps thousand separators in view while you type.
+ *
+ * A number input cannot show separators, and a broker reading 800000 back has
+ * to count digits. This holds the formatted string for display and hands the
+ * plain number back through moneyValue().
+ */
+function moneyInput(placeholder) {
+  const input = el('input', {
+    type: 'text', inputmode: 'numeric', autocomplete: 'off', placeholder: placeholder || '',
+  });
+  input.addEventListener('input', () => {
+    const digits = input.value.replace(/[^0-9]/g, '');
+    // Keep the caret where the typing happened rather than snapping to the end.
+    const fromEnd = input.value.length - input.selectionStart;
+    input.value = digits ? Number(digits).toLocaleString('en-CA') : '';
+    const pos = Math.max(0, input.value.length - fromEnd);
+    input.setSelectionRange(pos, pos);
+  });
+  return input;
+}
+
+/** The plain number behind a moneyInput, or null when it is empty. */
+function moneyValue(input) {
+  const digits = String(input.value || '').replace(/[^0-9]/g, '');
+  return digits ? Number(digits) : null;
+}
+
+/** Write a number into a moneyInput, formatted. */
+function setMoney(input, value) {
+  input.value = value === null || value === undefined || value === '' ? '' : Number(value).toLocaleString('en-CA');
+}
+
 function fmtDate(iso) {
   if (!iso) return '—';
   const d = new Date(iso.length === 10 ? iso + 'T12:00:00' : iso);
