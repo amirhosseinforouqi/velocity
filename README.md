@@ -114,6 +114,7 @@ Other commands:
 npm test                          # the full test suite (needs TEST_DATABASE_URL)
 npm run seed:demo                 # three demo clients to explore with
 npm run reset:broker-only -- --confirm
+npm run reset:password -- you@example.com --confirm   # locked out of staff account
 npm run backup                    # database rows + encrypted documents
 npm run restore -- <dir> --confirm
 npm run jobs                      # run the background passes once

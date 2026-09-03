@@ -22,7 +22,8 @@
     "reset:broker-only": "node scripts/reset-broker-only.js",
     "test:email": "node scripts/send-test-email.js",
     "verify:build": "node scripts/verify-build.js",
-    "test": "node --test tests/*.test.js"
+    "test": "node --test tests/*.test.js",
+    "reset:password": "node scripts/reset-password.js"
   },
   "dependencies": {
     "pg": "^8.23.0"
