@@ -154,6 +154,14 @@ const DEFAULT_SETTINGS = {
     archive_completed_after_days: null,
     archive_inactive_after_days: null,
   },
+  backups: {
+    // One database backup a day into the object store, kept for a month.
+    // This is a portable copy under the brokerage's own control; it
+    // complements the database provider's point-in-time recovery rather than
+    // replacing it.
+    enabled: true,
+    retain_days: 30,
+  },
   notifications: {
     auto_send_welcome: true,
     email_broker_on_client_upload: false,

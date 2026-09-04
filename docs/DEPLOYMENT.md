@@ -261,8 +261,30 @@ cron is needed.
 ## 9. Backups
 
 Supabase takes its own backups; use them, and enable point-in-time recovery on
-a paid plan. This platform also ships a portable backup that includes the
-document blobs, which a database-only backup does not:
+a paid plan. This platform keeps its own portable copy as well, under your
+control rather than the provider's.
+
+### Scheduled (what runs in production)
+
+The daily cron pass takes a database backup and writes it into your object
+store under `backups/backup-<timestamp>/`. It is on by default; the window is
+**Settings → the `backups` config** (`enabled`, `retain_days`, default 30).
+
+It needs an object store. On Vercel the filesystem is per-invocation, so a
+backup written there is gone before anyone could fetch it — rather than
+produce one, the pass fails with that reason, and the failure shows in the
+cron response and on `/api/ops/status`. **If `S3_BUCKET` is not set, you have
+no scheduled backups.** Check `backups.last_at` on the status page.
+
+Document blobs are not copied again: with an object store configured they are
+already in that bucket, so a second copy doubles the bill without surviving
+anything the first would not. What the scheduled backup saves is the database,
+which has no other copy under this application's control.
+
+### Manual (a full archive, including documents)
+
+The CLI backup does include the document blobs, which a database-only backup
+does not:
 
 ```bash
 npm run backup                       # → ./backups/backup-<timestamp>/

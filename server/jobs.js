@@ -242,6 +242,9 @@ const PASSES = [
   ['ai-review', () => require('./ai-review').processAiReviews()],
   ['onedrive', () => require('./onedrive').processOneDriveSync()],
   ['retention', retentionPass],
+  // Last, so a backup captures the state after the day's other passes have
+  // run rather than a snapshot taken halfway through them.
+  ['backup', () => require('./backup').runBackupPass()],
   ['maintenance', maintenancePass],
 ];
 

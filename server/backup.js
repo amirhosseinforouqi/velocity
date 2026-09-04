@@ -88,13 +88,14 @@ function stamp() {
  * @param {string} destRoot directory to create the backup directory inside
  * @param {{includeTransient?: boolean, includeDocuments?: boolean}} opts
  */
-async function createBackup(destRoot, opts = {}) {
-  const includeTransient = opts.includeTransient === true;
-  const includeDocuments = opts.includeDocuments !== false;
-
-  const dir = path.join(destRoot, `backup-${stamp()}`);
-  await fsp.mkdir(path.join(dir, 'documents'), { recursive: true, mode: 0o700 });
-
+/**
+ * Serialize every row the backup covers into one compressed, encrypted blob.
+ *
+ * Split out from createBackup so the scheduled pass produces a byte-identical
+ * payload to the one the restore path is tested against — a backup written by
+ * a different code path is a backup nobody has restored.
+ */
+async function databaseSnapshot({ includeTransient = false } = {}) {
   const tables = TABLES.filter((t) => includeTransient || !TRANSIENT.has(t));
   const counts = {};
   const lines = [];
@@ -109,14 +110,26 @@ async function createBackup(destRoot, opts = {}) {
   const checksum = crypto.createHash('sha256').update(plaintext).digest('hex');
   const compressed = await gzip(plaintext);
 
-  let dataBytes = compressed;
+  let bytes = compressed;
   let envelope = null;
   if (cryptoStore.isConfigured()) {
     const enc = cryptoStore.encryptBuffer(compressed);
-    dataBytes = enc.ciphertext;
+    bytes = enc.ciphertext;
     envelope = enc.envelope;
   }
-  await fsp.writeFile(path.join(dir, 'data.jsonl.gz'), dataBytes, { mode: 0o600 });
+  return { bytes, tables, counts, rows: lines.length, checksum, envelope };
+}
+
+async function createBackup(destRoot, opts = {}) {
+  const includeTransient = opts.includeTransient === true;
+  const includeDocuments = opts.includeDocuments !== false;
+
+  const dir = path.join(destRoot, `backup-${stamp()}`);
+  await fsp.mkdir(path.join(dir, 'documents'), { recursive: true, mode: 0o700 });
+
+  const snapshot = await databaseSnapshot({ includeTransient });
+  const { tables, counts, checksum, envelope } = snapshot;
+  await fsp.writeFile(path.join(dir, 'data.jsonl.gz'), snapshot.bytes, { mode: 0o600 });
 
   // Documents are copied verbatim: they are already encrypted on disk and
   // their envelopes travel with the document_versions rows.
@@ -145,7 +158,7 @@ async function createBackup(destRoot, opts = {}) {
     app: 'mortgage-client-platform',
     tables,
     counts,
-    rows: lines.length,
+    rows: snapshot.rows,
     checksum,
     encrypted: !!envelope,
     envelope,
@@ -325,4 +338,128 @@ async function pruneBackups(destRoot, { days = 30, keep = 7 } = {}) {
   return { removed };
 }
 
-module.exports = { createBackup, restoreBackup, verifyBackup, pruneBackups, TABLES, TRANSIENT };
+
+// ---------------------------------------------------------------------------
+// Scheduled backups
+
+const BACKUP_PREFIX = 'backups';
+
+/**
+ * Take a scheduled database backup and put it somewhere that outlives the
+ * process.
+ *
+ * The manual `npm run backup` writes a directory on local disk, which is the
+ * right answer on a server with a volume and useless on Vercel: the
+ * filesystem there is per-invocation, so a backup written to it is gone
+ * before anyone could fetch it. So this pass writes to the object store,
+ * and when there is no object store it fails loudly rather than producing a
+ * file nobody can ever read.
+ *
+ * Documents are not re-copied. When an object store is configured the
+ * document blobs already live in it, so a second copy in the same bucket
+ * doubles the storage bill without surviving anything the first copy would
+ * not. What has no other copy under this application's control is the
+ * database, and that is what this saves.
+ */
+async function runBackupPass({ force = false, asOf = new Date() } = {}) {
+  const cfg = await db.getSetting('backups', {});
+  if (cfg.enabled === false) return { skipped: 'disabled' };
+
+  const day = asOf.toISOString().slice(0, 10);
+  const state = await db.getSetting('backup_state', {});
+  if (!force && state.last_day === day) return { skipped: 'already_ran_today', last_key: state.last_key };
+
+  const objectstore = require('./objectstore');
+  if (!objectstore.isConfigured()) {
+    // Deliberately an error: a "successful" backup that went nowhere is the
+    // failure mode this whole pass exists to prevent.
+    throw new Error(
+      'Scheduled backups need an object store (S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY). '
+      + 'Without one there is nowhere durable to write to, and a backup on this filesystem would not survive the request.'
+    );
+  }
+
+  const snapshot = await databaseSnapshot();
+  const name = `backup-${stamp()}`;
+  const manifest = {
+    format: 1,
+    created_at: asOf.toISOString(),
+    app: 'mortgage-client-platform',
+    scheduled: true,
+    tables: snapshot.tables,
+    counts: snapshot.counts,
+    rows: snapshot.rows,
+    checksum: snapshot.checksum,
+    encrypted: !!snapshot.envelope,
+    envelope: snapshot.envelope,
+    // Documents are not duplicated here; they are already in this bucket.
+    documents: 0,
+    document_bytes: 0,
+    missing_documents: [],
+    documents_note: 'Database only. Document blobs already live in this object store.',
+  };
+
+  await objectstore.putObject(`${BACKUP_PREFIX}/${name}/data.jsonl.gz`, snapshot.bytes, 'application/gzip');
+  await objectstore.putObject(
+    `${BACKUP_PREFIX}/${name}/manifest.json`,
+    Buffer.from(JSON.stringify(manifest, null, 2), 'utf8'),
+    'application/json'
+  );
+
+  const pruned = await pruneStoredBackups(cfg.retain_days ?? 30, asOf);
+  await db.setSetting('backup_state', {
+    last_day: day,
+    last_at: asOf.toISOString(),
+    last_key: `${BACKUP_PREFIX}/${name}`,
+    last_rows: snapshot.rows,
+    last_bytes: snapshot.bytes.length,
+  });
+
+  return { key: `${BACKUP_PREFIX}/${name}`, rows: snapshot.rows, bytes: snapshot.bytes.length, pruned };
+}
+
+/**
+ * Delete stored backups older than the retention window.
+ *
+ * The date comes from the key this code wrote, not from the object store's
+ * own metadata, so a key that does not parse is left alone rather than
+ * deleted on a guess.
+ */
+async function pruneStoredBackups(retainDays, asOf = new Date()) {
+  const days = Number(retainDays);
+  if (!Number.isFinite(days) || days <= 0) return [];
+  const objectstore = require('./objectstore');
+  const cutoff = asOf.getTime() - days * 86400000;
+
+  const removed = [];
+  for (const obj of await objectstore.listObjects()) {
+    const m = /^backups\/backup-(\d{4}-\d{2}-\d{2})T/.exec(obj.key);
+    if (!m) continue;
+    const taken = Date.parse(`${m[1]}T00:00:00Z`);
+    if (!Number.isFinite(taken) || taken >= cutoff) continue;
+    await objectstore.deleteObject(obj.key);
+    removed.push(obj.key);
+  }
+  return removed;
+}
+
+/** What the administrator status page reports about backups. */
+async function backupStatus() {
+  const cfg = await db.getSetting('backups', {});
+  const state = await db.getSetting('backup_state', {});
+  const objectstore = require('./objectstore');
+  return {
+    enabled: cfg.enabled !== false,
+    destination: objectstore.isConfigured() ? 'object_store' : null,
+    retain_days: cfg.retain_days ?? 30,
+    last_at: state.last_at || null,
+    last_key: state.last_key || null,
+    last_rows: state.last_rows ?? null,
+  };
+}
+
+module.exports = {
+  createBackup, restoreBackup, verifyBackup, pruneBackups,
+  databaseSnapshot, runBackupPass, pruneStoredBackups, backupStatus,
+  TABLES, TRANSIENT,
+};

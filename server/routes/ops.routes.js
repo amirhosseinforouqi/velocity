@@ -70,6 +70,7 @@ function register(router) {
         error_reporting: require('../sentry').isEnabled(),
       },
       audit_chain: chain,
+      backups: await require('../backup').backupStatus(),
       encryption: {
         active_key: process.env.DOCUMENT_ENCRYPTION_ACTIVE_KEY || null,
         configured: !!process.env.DOCUMENT_ENCRYPTION_KEYS,

@@ -244,6 +244,74 @@ describe('object-store backend', () => {
     await fsp.rm(dest, { recursive: true, force: true });
   });
 
+  test('the scheduled pass writes a backup into the bucket, and it restores', async () => {
+    // The point of the scheduled pass is that it puts the backup somewhere
+    // that outlives the request, so this asserts against the bucket rather
+    // than a temp directory — and then restores from what it actually wrote.
+    const backup = require('../server/backup');
+    const db = require('../server/db');
+    await db.setSetting('backup_state', {});
+
+    const result = await backup.runBackupPass();
+    assert.ok(result.key.startsWith('backups/backup-'), result.key);
+    assert.ok(result.rows > 0, 'the snapshot holds rows');
+
+    const keys = [...objects.keys()].map((k) => k.replace(/^documents\//, ''));
+    assert.ok(keys.includes(`${result.key}/data.jsonl.gz`), keys.join(', '));
+    assert.ok(keys.includes(`${result.key}/manifest.json`));
+
+    const objectstore = require('../server/objectstore');
+    const manifest = JSON.parse((await objectstore.getObject(`${result.key}/manifest.json`)).toString('utf8'));
+    assert.equal(manifest.scheduled, true);
+    assert.equal(manifest.encrypted, true, 'client PII is never written in the clear');
+    assert.equal(manifest.documents, 0, 'documents are not duplicated inside their own bucket');
+
+    // Round-trip it: write the two objects out as a backup directory and
+    // restore, which is the only thing that proves the bytes are usable.
+    const fsp = require('node:fs/promises');
+    const os = require('node:os');
+    const path = require('node:path');
+    const dir = path.join(await fsp.mkdtemp(path.join(os.tmpdir(), 'sched-backup-')), 'backup-restored');
+    await fsp.mkdir(path.join(dir, 'documents'), { recursive: true });
+    await fsp.writeFile(path.join(dir, 'data.jsonl.gz'), await objectstore.getObject(`${result.key}/data.jsonl.gz`));
+    await fsp.writeFile(path.join(dir, 'manifest.json'), JSON.stringify(manifest));
+
+    const verified = await backup.verifyBackup(dir);
+    assert.equal(verified.ok, true, JSON.stringify(verified));
+
+    const restored = await backup.restoreBackup(dir, { confirm: true });
+    assert.ok(restored.rows > 0);
+    await fsp.rm(dir, { recursive: true, force: true });
+  });
+
+  test('it takes one backup a day, and says why it skipped', async () => {
+    const backup = require('../server/backup');
+    const db = require('../server/db');
+    await db.setSetting('backup_state', {});
+    await backup.runBackupPass();
+    const second = await backup.runBackupPass();
+    assert.equal(second.skipped, 'already_ran_today');
+
+    await db.setSetting('backups', { enabled: false });
+    await db.setSetting('backup_state', {});
+    assert.equal((await backup.runBackupPass()).skipped, 'disabled');
+    await db.setSetting('backups', { enabled: true, retain_days: 30 });
+  });
+
+  test('backups past the retention window are removed, and unparseable keys left alone', async () => {
+    const backup = require('../server/backup');
+    const objectstore = require('../server/objectstore');
+    const old = 'backups/backup-2020-01-01T00-00-00-000Z/data.jsonl.gz';
+    const notOurs = 'backups/something-else.txt';
+    await objectstore.putObject(old, Buffer.from('stale'));
+    await objectstore.putObject(notOurs, Buffer.from('not a backup'));
+
+    const removed = await backup.pruneStoredBackups(30);
+    assert.ok(removed.includes(old), removed.join(', '));
+    assert.ok(!removed.includes(notOurs), 'a key this code did not write is never deleted on a guess');
+    assert.equal(await objectstore.getObject(notOurs) !== null, true);
+  });
+
   test('a wrong secret key is rejected by the store, and surfaces as an error', async () => {
     const objectstore = require('../server/objectstore');
     const realSecret = process.env.S3_SECRET_ACCESS_KEY;

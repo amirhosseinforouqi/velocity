@@ -16,7 +16,7 @@ const manageUsers = requirePermission('users.manage');
 
 const EDITABLE_CONFIG_KEYS = [
   'brokerage', 'client_steps', 'reminders', 'automation', 'uploads', 'security', 'retention',
-  'role_permissions', 'notifications', 'ai_review', 'qualification',
+  'role_permissions', 'notifications', 'ai_review', 'qualification', 'backups',
 ];
 
 /** Route params are user input: reject non-numeric ids as 404, never 500. */
@@ -58,6 +58,21 @@ function validateConfig(key, value) {
       if (!admin.includes(required)) {
         throw new ApiError(400, `The administrator role must keep "${required}".`, 'admin_lockout');
       }
+    }
+    return out;
+  }
+
+  if (key === 'backups') {
+    const out = { ...value };
+    if (out.enabled !== undefined) out.enabled = !!out.enabled;
+    if (out.retain_days !== undefined) {
+      const n = intOrNull(out.retain_days);
+      // A week is the shortest window that survives someone being away for a
+      // weekend; beyond two years the object store bill is the real limit.
+      if (n === null || n < 7 || n > 730) {
+        throw new ApiError(400, '"retain_days" must be a number between 7 and 730.', 'bad_value');
+      }
+      out.retain_days = n;
     }
     return out;
   }

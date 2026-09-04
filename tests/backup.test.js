@@ -249,3 +249,41 @@ describe('retention', () => {
     assert.equal(after, before);
   });
 });
+
+describe('scheduled backups', () => {
+  test('with nowhere durable to write, the pass fails loudly instead of pretending', async () => {
+    // This is the failure this pass exists to prevent: on a serverless
+    // platform a backup written to the local filesystem is gone before
+    // anyone could fetch it, and a green cron run would say otherwise.
+    const backup = require('../server/backup');
+    const db = require('../server/db');
+    await db.setSetting('backups', { enabled: true, retain_days: 30 });
+    await db.setSetting('backup_state', {});
+
+    const saved = process.env.S3_BUCKET;
+    delete process.env.S3_BUCKET;
+    try {
+      await assert.rejects(() => backup.runBackupPass(), /object store/i);
+    } finally {
+      if (saved === undefined) delete process.env.S3_BUCKET;
+      else process.env.S3_BUCKET = saved;
+    }
+  });
+
+  test('a failed backup is reported by the cron run rather than stopping the others', async () => {
+    // runAllJobs catches per-pass failures on purpose; what must not happen
+    // is the whole run reporting ok when the backup did not happen.
+    const results = await require('../server/jobs').runAllJobs();
+    assert.ok('backup' in results, 'the backup pass is part of the scheduled run');
+    assert.equal(results.backup.ok, false, 'and its failure is visible in the response');
+    assert.match(results.backup.error, /object store/i);
+    assert.equal(results.reminders.ok, true, 'the other passes still ran');
+  });
+
+  test('the status page reports when the last backup was, or that there was none', async () => {
+    const status = await require('../server/backup').backupStatus();
+    assert.equal(status.enabled, true);
+    assert.equal(status.destination, null, 'no object store means no destination');
+    assert.equal(status.last_at, null, 'and nothing has been backed up');
+  });
+});
