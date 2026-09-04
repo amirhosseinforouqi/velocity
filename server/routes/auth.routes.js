@@ -328,11 +328,20 @@ function register(router) {
 
   router.post('/api/auth/activate', async (ctx) => {
     const { token, password } = ctx.body || {};
+    // Check the password before spending the token. Consuming it first meant
+    // a client who typed something too short lost their invitation and had to
+    // ask the broker for a new link — the password rules are exactly what a
+    // first-time user is most likely to trip over.
+    const peeked = await peekAuthToken(token, 'activate');
+    if (!peeked) throw new ApiError(400, 'This activation link has expired or was already used. Ask your broker to send a new one.', 'bad_token');
+    const candidate = await get('SELECT * FROM users WHERE id = ?', peeked.user_id);
+    if (!candidate) throw new ApiError(400, 'Account not found.', 'bad_token');
+    await validatePasswordStrength(password, { role: candidate.role, user: candidate });
+
     const row = await consumeAuthToken(token, 'activate');
     if (!row) throw new ApiError(400, 'This activation link has expired or was already used. Ask your broker to send a new one.', 'bad_token');
     const user = await get('SELECT * FROM users WHERE id = ?', row.user_id);
     if (!user) throw new ApiError(400, 'Account not found.', 'bad_token');
-    await validatePasswordStrength(password, { role: user.role, user });
 
     await run(
       "UPDATE users SET password_hash = ?, status = 'active', must_change_password = 0, updated_at = ? WHERE id = ?",

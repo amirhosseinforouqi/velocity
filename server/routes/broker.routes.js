@@ -264,7 +264,7 @@ async function inviteApplicant(applicantId, actor, ctx, { sendEmail = true } = {
     throw new ApiError(400, 'That email belongs to a brokerage staff account and cannot be used for a client portal login.', 'email_conflict');
   }
 
-  const { generateTemporaryPassword, hashPassword, destroyAllSessions } = require('../auth');
+  const { generateTemporaryPassword, hashPassword, destroyAllSessions, createAuthToken } = require('../auth');
   const temporaryPassword = generateTemporaryPassword();
   const passwordHash = await hashPassword(temporaryPassword);
 
@@ -294,6 +294,18 @@ async function inviteApplicant(applicantId, actor, ctx, { sendEmail = true } = {
     : null;
   const link = `${portalBaseUrl()}/login`;
 
+  // The invitation email carries a single-use link, not a password.
+  //
+  // Email is not a confidential channel: it sits in transit logs, in the
+  // client's inbox indefinitely, and in whatever else has access to that
+  // mailbox. A link expires in a week, works once, and lets the client pick
+  // a password we never knew. The temporary password below still exists for
+  // the case where the broker reads it out over the phone — that is a
+  // deliberate act by an authenticated broker, not something sitting in an
+  // inbox forever.
+  const activationToken = await createAuthToken(user.id, 'activate', 24 * 7);
+  const activationLink = `${portalBaseUrl()}/activate?token=${activationToken}`;
+
   if (sendEmail) {
     await sendTemplate('welcome', {
       toEmail: user.email,
@@ -304,18 +316,27 @@ async function inviteApplicant(applicantId, actor, ctx, { sendEmail = true } = {
         client_first_name: applicant.first_name,
         client_last_name: applicant.last_name,
         portal_link: link,
+        activation_link: activationLink,
         username: user.email,
+        // Still supplied, because a brokerage that has written its own
+        // welcome email keeps its wording — and theirs may still use this
+        // placeholder. The shipped default no longer does.
         temporary_password: temporaryPassword,
         application_number: file ? file.file_number : '',
         service_type: appType ? appType.name : '',
         closing_date: file && file.closing_date ? file.closing_date : '',
       },
-      redact: [temporaryPassword],
+      // The link is a credential for the length of its life, so it is kept
+      // out of the stored copy of the email the same way a password was.
+      redact: [temporaryPassword, activationToken],
     });
-    await activity(applicant.file_id, actor, 'email_sent', `Welcome email with portal credentials sent to ${fullName(applicant)}`);
+    await activity(applicant.file_id, actor, 'email_sent', `Portal invitation sent to ${fullName(applicant)}`);
   }
   await audit(actor ? actor.id : null, 'portal_account_created', 'applicant', applicant.id, ctx ? ctx.ip : null, { user_id: user.id });
-  return { user, username: user.email, temporary_password: temporaryPassword, portal_link: link };
+  return {
+    user, username: user.email, temporary_password: temporaryPassword,
+    portal_link: link, activation_link: activationLink,
+  };
 }
 
 async function staffList() {
@@ -715,7 +736,7 @@ function register(router) {
     // Create the client's OneDrive folder tree in the background.
     await require('../onedrive').queueFolderCreation(created.fileId);
 
-    // Portal account + welcome email with temporary credentials. Automatic —
+    // Portal account + invitation email. Automatic —
     // the broker never has to send this by hand — but the brokerage can turn
     // auto-send off in Settings → Notifications.
     const autoSend = (await getSetting('notifications', {})).auto_send_welcome !== false;
@@ -730,6 +751,7 @@ function register(router) {
           username: inv.username,
           temporary_password: inv.temporary_password,
           portal_link: inv.portal_link,
+          activation_link: inv.activation_link,
           emailed: wantWelcome,
         });
       } catch (err) {
@@ -745,6 +767,7 @@ function register(router) {
           username: inv.username,
           temporary_password: inv.temporary_password,
           portal_link: inv.portal_link,
+          activation_link: inv.activation_link,
           emailed: wantWelcome,
         });
       } catch (err) {
@@ -872,7 +895,10 @@ function register(router) {
     if (ctx.body && ctx.body.invite) {
       try {
         const inv = await inviteApplicant(id, ctx.user, ctx);
-        invite = { username: inv.username, temporary_password: inv.temporary_password, portal_link: inv.portal_link };
+        invite = {
+          username: inv.username, temporary_password: inv.temporary_password,
+          portal_link: inv.portal_link, activation_link: inv.activation_link,
+        };
       } catch (err) { invite = { error: err.message }; }
     }
     return { ok: true, applicant_id: id, checklist_sync: sync, invite };
@@ -939,6 +965,7 @@ function register(router) {
       username: result.username,
       temporary_password: result.temporary_password,
       portal_link: result.portal_link,
+      activation_link: result.activation_link,
     };
   });
 

@@ -1163,20 +1163,31 @@ function wizardStepDetails() {
 
 /** Show the generated credentials once, so the broker can relay them if needed. */
 function credentialsModal(creds, onClose) {
+  // Two ways in, and they are not equivalent. The invitation link is what the
+  // client actually receives; the temporary password is the fallback for
+  // reading out over the phone when their email is wrong or has not arrived.
+  const link = creds.activation_link;
   openModal('Portal account created',
     el('div', null,
       el('p', { class: 'muted' }, creds.emailed
-        ? 'The welcome email with these credentials has been sent. This is the only time the temporary password is shown here — it is stored only as a hash.'
-        : 'Automatic sending is off, so share these with the client yourself. This is the only time the temporary password is shown — it is stored only as a hash.'),
+        ? 'The invitation email has been sent. It contains a sign-in link, not a password.'
+        : 'Automatic sending is off, so send the client their invitation link yourself.'),
+      link ? el('div', { class: 'card tight' },
+        el('div', { class: 'faint' }, 'Invitation link — expires in 7 days, works once'),
+        el('div', { style: 'font-weight:600;word-break:break-all' }, link)) : null,
       el('div', { class: 'card tight' },
         el('div', { class: 'faint' }, 'Portal'),
         el('div', { style: 'font-weight:600;margin-bottom:8px' }, creds.portal_link || '/login'),
         el('div', { class: 'faint' }, 'Username'),
         el('div', { style: 'font-weight:600;margin-bottom:8px' }, creds.username),
-        el('div', { class: 'faint' }, 'Temporary password'),
+        el('div', { class: 'faint' }, 'Temporary password — for reading out by phone if the link does not reach them'),
         el('div', { style: 'font-weight:700;font-family:ui-monospace,monospace;font-size:1.05rem' }, creds.temporary_password)),
-      el('p', { class: 'faint' }, 'The client is required to choose their own password the first time they sign in.')),
+      el('p', { class: 'faint' }, 'Shown once. Both are stored only as hashes, and the client chooses their own password either way.')),
     (close) => [
+      link ? el('button', {
+        class: 'btn secondary',
+        onclick: () => { navigator.clipboard?.writeText(link).then(() => toast('Link copied.', 'good')); },
+      }, 'Copy invitation link') : null,
       el('button', {
         class: 'btn secondary',
         onclick: () => {
@@ -1184,7 +1195,7 @@ function credentialsModal(creds, onClose) {
             `Portal: ${creds.portal_link}\nUsername: ${creds.username}\nTemporary password: ${creds.temporary_password}`
           ).then(() => toast('Copied.', 'good'));
         },
-      }, 'Copy details'),
+      }, 'Copy sign-in details'),
       el('button', { class: 'btn', onclick: () => { close(); if (onClose) onClose(); } }, 'Done'),
     ]);
 }

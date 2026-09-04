@@ -370,11 +370,12 @@ describe('email templates', () => {
     const templates = await admin.get('/api/settings/templates');
     const welcome = templates.data.templates.find((t) => t.key === 'welcome');
     assert.ok(welcome.body.includes('{{username}}'));
-    assert.ok(welcome.body.includes('{{temporary_password}}'));
+    assert.ok(welcome.body.includes('{{activation_link}}'), 'the default invitation sends a link');
+    assert.ok(!welcome.body.includes('{{temporary_password}}'), 'and not a password');
 
     const preview = await admin.post('/api/settings/templates/preview', {
       subject: 'Welcome to {{brokerage_name}}',
-      body: 'Hi {{client_first_name}}, your username is {{username}} and password {{temporary_password}}. File {{application_number}}, service {{service_type}}.',
+      body: 'Hi {{client_first_name}}, your username is {{username}} — set your password at {{activation_link}}. File {{application_number}}, service {{service_type}}.',
     });
     assert.equal(preview.status, 200);
     assert.ok(!preview.data.preview.body.includes('{{'), 'all placeholders resolve in the preview');
@@ -382,7 +383,7 @@ describe('email templates', () => {
 
     assert.equal((await admin.patch('/api/settings/templates/welcome', {
       subject: 'Custom subject for {{client_first_name}}',
-      body: 'Custom body {{username}} / {{temporary_password}}',
+      body: 'Custom body {{username}} / {{activation_link}}',
     })).status, 200);
 
     const reset = await admin.post('/api/settings/templates/welcome/reset', {});

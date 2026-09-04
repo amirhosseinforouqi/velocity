@@ -309,12 +309,7 @@ const DOCUMENT_RULES = [
 ];
 
 
-const EMAIL_TEMPLATES = [
-  {
-    key: 'welcome',
-    name: 'Welcome / account credentials',
-    subject: 'Welcome to {{brokerage_name}}',
-    body: `Hi {{client_first_name}},
+const LEGACY_WELCOME_BODY = `Hi {{client_first_name}},
 
 Welcome to {{brokerage_name}}.
 
@@ -330,6 +325,31 @@ Temporary Password:
 {{temporary_password}}
 
 Please log in and change your temporary password after your first login.
+
+If you have any questions, please contact {{broker_name}}.
+
+Best,
+{{broker_name}}
+{{brokerage_name}}`;
+
+const EMAIL_TEMPLATES = [
+  {
+    key: 'welcome',
+    name: 'Welcome / portal invitation',
+    subject: 'Welcome to {{brokerage_name}}',
+    body: `Hi {{client_first_name}},
+
+Welcome to {{brokerage_name}}.
+
+We have created your secure mortgage client portal. Use it to see exactly where your application stands, upload documents, and message {{broker_name}}.
+
+Choose your password and sign in here:
+{{activation_link}}
+
+This link is for you alone and expires in 7 days. If it has expired, ask {{broker_name}} to send you a new one.
+
+Your username is your email address:
+{{username}}
 
 If you have any questions, please contact {{broker_name}}.
 
@@ -565,6 +585,7 @@ async function seedIfNeeded() {
   await seedWorkflowRules();
   await applyPermissionUpgrades();
   await applyCatalogUpgrades();
+  await upgradeWelcomeTemplate();
   await bootstrapAdmin();
 }
 
@@ -698,6 +719,34 @@ const RETIRED_DOCUMENT_RULES = [
   'Refinance — property documents',
   'First-time home buyers',
 ];
+
+/**
+ * Move an existing brokerage onto the invitation-link welcome email.
+ *
+ * Email templates are seeded once and then belong to the brokerage, so a new
+ * shipped default reaches nobody who is already running. That matters here
+ * because the old template's {{temporary_password}} is no longer supplied —
+ * an untouched template would quietly send an email with an empty password
+ * and no way in.
+ *
+ * A template the brokerage has edited is left exactly as written: their
+ * wording is theirs, and {{temporary_password}} still resolves for them. Only
+ * a body that is still byte-for-byte the shipped default is replaced.
+ */
+async function upgradeWelcomeTemplate() {
+  const applied = await getSetting('catalog_upgrades', []);
+  if (applied.includes('welcome_invitation_link')) return;
+
+  const current = await get("SELECT body FROM email_templates WHERE key = 'welcome'");
+  const shipped = EMAIL_TEMPLATES.find((t) => t.key === 'welcome');
+  if (current && shipped && current.body.trim() === LEGACY_WELCOME_BODY.trim()) {
+    await run(
+      'UPDATE email_templates SET name = ?, subject = ?, body = ? WHERE key = ?',
+      shipped.name, shipped.subject, shipped.body, 'welcome'
+    );
+  }
+  await setSetting('catalog_upgrades', [...applied, 'welcome_invitation_link']);
+}
 
 async function applyCatalogUpgrades() {
   const applied = await getSetting('catalog_upgrades', []);
@@ -856,6 +905,7 @@ module.exports = {
   bootstrapAdmin,
   applyPermissionUpgrades,
   applyCatalogUpgrades,
+  upgradeWelcomeTemplate,
   ALL_PERMISSIONS,
   DEFAULT_ROLE_PERMISSIONS,
   PERMISSION_UPGRADES,

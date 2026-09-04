@@ -186,8 +186,10 @@ describe('Microsoft 365 mail (no mailbox password anywhere)', () => {
     assert.ok(mail, 'the welcome email was sent via Graph');
     assert.equal(mail.message.toRecipients[0].emailAddress.address, 'john@client.test');
     assert.ok(mail.message.body.content.includes(creds.username));
-    assert.ok(mail.message.body.content.includes(creds.temporary_password));
-    assert.ok(mail.message.body.content.includes('/login'));
+    assert.ok(mail.message.body.content.includes('/activate'),
+      'the invitation carries a link to choose a password');
+    assert.ok(!mail.message.body.content.includes(creds.temporary_password),
+      'and never the password itself — email is not a confidential channel');
   });
 
   test('the access token is reused rather than re-fetched for every message', async () => {

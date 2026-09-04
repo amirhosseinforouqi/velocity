@@ -17,6 +17,7 @@ let admin;
 let client;      // the primary applicant's portal user
 let fileId;
 let temporaryPassword;
+let activationLink;
 const CLIENT_PASSWORD = 'Harbour-Lantern-Quartz-27';
 
 before(async () => {
@@ -48,20 +49,26 @@ describe('scenario 1 — creating a client is one step', () => {
 
     const invite = res.data.invites[0];
     assert.equal(invite.username, 'priya@test.local');
-    assert.ok(invite.temporary_password, 'a temporary password is issued');
+    assert.ok(invite.temporary_password, 'a temporary password is issued for the phone fallback');
+    assert.match(invite.activation_link, /\/activate\?token=/, 'and an invitation link for the email');
     assert.equal(invite.emailed, true);
     temporaryPassword = invite.temporary_password;
+    activationLink = invite.activation_link;
   });
 
-  test('the welcome email is logged with the password redacted', async () => {
+  test('the invitation email carries a link, and never a password', async () => {
+    // Email is not a confidential channel: it sits in transit logs and in the
+    // client's inbox indefinitely. The link expires and works once.
     const emails = await admin.get(`/api/broker/files/${fileId}/emails`);
     const welcome = emails.data.emails.find((e) => e.template_key === 'welcome');
     assert.ok(welcome, 'a welcome email should have been queued');
-    const full = await admin.get(`/api/broker/emails/${welcome.id}`);
-    assert.ok(
-      !full.data.email.body.includes(temporaryPassword),
-      'the stored copy must not contain the temporary password'
-    );
+    const body = (await admin.get(`/api/broker/emails/${welcome.id}`)).data.email.body;
+    assert.ok(!body.includes(temporaryPassword), 'no password in the email');
+    assert.ok(body.includes('/activate'), 'the client is sent to choose their own password');
+
+    // The stored copy is redacted too: the link is a credential while it lives.
+    const token = new URL(activationLink).searchParams.get('token');
+    assert.ok(!body.includes(token), 'the stored copy does not carry a usable link');
   });
 
   test('the activity timeline records what happened, in plain words', async () => {
@@ -436,5 +443,71 @@ describe('housekeeping', () => {
     assert.ok(res.data.active_clients > 25);
     assert.ok(Array.isArray(res.data.by_stage));
     assert.equal(typeof res.data.documents_outstanding, 'number');
+  });
+});
+
+describe('the portal invitation link', () => {
+  // A separate applicant, so scenario 2 keeps exercising the temporary
+  // password the broker reads out by phone. Both routes in are real.
+  let link;
+  let email;
+
+  test('an invited co-applicant gets a link of their own', async () => {
+    await helpers.clearRateLimits();
+    email = 'linked.invite@test.local';
+    const added = await admin.post(`/api/broker/files/${fileId}/applicants`, {
+      first_name: 'Tomas', last_name: 'Nyberg', role: 'co_borrower', email,
+      employment_type: 'employee', invite: true,
+    });
+    assert.equal(added.status, 200, JSON.stringify(added.data));
+    link = added.data.invite.activation_link;
+    assert.match(link, /\/activate\?token=/);
+  });
+
+  test('it signs them in, lets them choose a password, and then is spent', async () => {
+    const token = new URL(link).searchParams.get('token');
+
+    await helpers.clearRateLimits();
+    const peek = await helpers.makeClient(ctx.base).get(`/api/auth/token-info?token=${encodeURIComponent(token)}`);
+    assert.equal(peek.status, 200, JSON.stringify(peek.data));
+    assert.equal(peek.data.email, email);
+
+    const chosen = 'Basalt-Meadow-Anchor-71';
+    const activated = helpers.makeClient(ctx.base);
+    const done = await activated.post('/api/auth/activate', { token, password: chosen });
+    assert.equal(done.status, 200, JSON.stringify(done.data));
+    assert.equal((await activated.get('/api/auth/me')).data.must_change_password, false,
+      'they chose it themselves, so there is nothing to force a change of');
+
+    // Used once, and only once — a link in an inbox is not a standing key.
+    await helpers.clearRateLimits();
+    const replay = await helpers.makeClient(ctx.base).post('/api/auth/activate', { token, password: chosen });
+    assert.equal(replay.status, 400);
+    assert.equal(replay.data.code, 'bad_token');
+
+    await helpers.clearRateLimits();
+    assert.equal((await helpers.makeClient(ctx.base).post('/api/auth/login', {
+      email, password: chosen,
+    })).status, 200, 'the password they chose is the one that works');
+  });
+
+  test('a weak password is refused at activation, and the link survives to try again', async () => {
+    await helpers.clearRateLimits();
+    const second = await admin.post(`/api/broker/files/${fileId}/applicants`, {
+      first_name: 'Ines', last_name: 'Barros', role: 'guarantor', email: 'weak.invite@test.local',
+      employment_type: 'employee', invite: true,
+    });
+    assert.equal(second.status, 200, JSON.stringify(second.data));
+    const token = new URL(second.data.invite.activation_link).searchParams.get('token');
+
+    const c = helpers.makeClient(ctx.base);
+    const weak = await c.post('/api/auth/activate', { token, password: 'password' });
+    assert.equal(weak.status, 400);
+    assert.equal(weak.data.code, 'weak_password');
+
+    await helpers.clearRateLimits();
+    const ok = await helpers.makeClient(ctx.base)
+      .post('/api/auth/activate', { token, password: 'Quartz-Meadow-Bridge-31' });
+    assert.equal(ok.status, 200, 'a rejected attempt must not burn the invitation');
   });
 });

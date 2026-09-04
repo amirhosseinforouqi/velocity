@@ -149,6 +149,7 @@ async function previewTemplate(subject, body) {
     closing_date: '2026-10-15',
     username: 'john.smith@example.com',
     temporary_password: 'Xk4m-Qw9t-Bw2p',
+    activation_link: `${portalBaseUrl()}/activate?token=example-invitation-token`,
     application_number: 'MTG-2026-00128',
     service_type: 'Purchase',
     document_list: '- Most recent pay stub\n- Employment letter\n- 2025 Notice of Assessment',
