@@ -74,7 +74,7 @@ async function renderFileView(fileId, tab) {
     ['documents', `Documents${file.checklist.awaiting_review ? ` (${file.checklist.awaiting_review})` : ''}`, can('documents.view')],
     ['aml', 'AML', can('aml.view')],
     ['messages', `Messages${file.unread_messages ? ` (${file.unread_messages})` : ''}`, true],
-    ['tasks', 'Tasks', true],
+    ['tasks', 'Tasks', can('tasks.manage')],
     ['notes', 'Notes', can('notes.manage')],
     ['activity', 'Activity', true],
     ['emails', 'Emails', can('emails.view')],
@@ -233,21 +233,29 @@ function renderFileOverview(body, { file, applicants, next_step, attention, stag
           h.note ? el('div', { class: 'small muted' }, h.note) : null,
           el('div', { class: 't-time' }, `${fmtDateTime(h.changed_at)}${h.changed_by_name ? ' · ' + h.changed_by_name : ''}`)))));
 
-  const assignSelect = el('select', null,
+  // Assigning a file is a clients.edit action. Showing the control to someone
+  // who cannot use it only produces a permission error after they change it,
+  // by which point the select already reads as though it took.
+  const canAssign = can('clients.edit');
+  const assignSelect = canAssign ? el('select', null,
     el('option', { value: '' }, 'Unassigned'),
     BK.staff.map((s) => el('option', {
       value: s.id, selected: file.assigned_broker && file.assigned_broker.id === s.id ? '' : undefined,
-    }, `${s.first_name} ${s.last_name}`)));
-  assignSelect.addEventListener('change', async () => {
-    try {
-      await api.post(`/api/broker/files/${file.id}/assign`, { broker_id: assignSelect.value || null });
-      toast('Assignment updated.', 'good');
-    } catch (err) { toast(err.message, 'bad'); }
-  });
+    }, `${s.first_name} ${s.last_name}`))) : null;
+  if (assignSelect) {
+    assignSelect.addEventListener('change', async () => {
+      try {
+        await api.post(`/api/broker/files/${file.id}/assign`, { broker_id: assignSelect.value || null });
+        toast('Assignment updated.', 'good');
+      } catch (err) { toast(err.message, 'bad'); }
+    });
+  }
 
-  const adminCard = el('div', { class: 'card' },
+  const adminCard = canAssign || can('clients.archive') ? el('div', { class: 'card' },
     el('h3', null, 'File'),
-    el('label', { class: 'field' }, el('span', null, 'Assigned to'), assignSelect),
+    canAssign
+      ? el('label', { class: 'field' }, el('span', null, 'Assigned to'), assignSelect)
+      : null,
     can('clients.archive') ? el('div', { class: 'row wrap' },
       ['completed', 'cancelled', 'archived'].map((s) => el('button', {
         class: 'btn sm secondary',
@@ -260,10 +268,10 @@ function renderFileOverview(body, { file, applicants, next_step, attention, stag
       file.status !== 'active' ? el('button', {
         class: 'btn sm',
         onclick: async () => { await api.post(`/api/broker/files/${file.id}/status`, { status: 'active' }); renderFileView(file.id, 'overview'); },
-      }, 'Reactivate') : null) : null);
+      }, 'Reactivate') : null) : null) : null;
 
   clearNode(body);
-  body.append(attentionCard, nextCard, appCard, keyDatesCard(file), applicantsCard, historyCard, adminCard);
+  mount(body, attentionCard, nextCard, appCard, keyDatesCard(file), applicantsCard, historyCard, adminCard);
 }
 
 /**
@@ -303,14 +311,16 @@ function keyDatesCard(file) {
     holder);
 
   (async () => {
-    let dates = {};
-    try {
-      const deal = await api.get(`/api/broker/files/${file.id}/deal`);
-      dates = deal.file.lifecycle || {};
-    } catch {
-      // Financial permission is not required to see a closing date, so fall
-      // back to what the file summary already carries.
-      dates = { closing_date: file.closing_date };
+    // The full set of lifecycle dates lives behind the financials permission.
+    // Someone without it still sees the closing date the file summary carries,
+    // and the request that would be refused is never made — a 403 in the
+    // network log reads like a bug even when the page recovers from it.
+    let dates = { closing_date: file.closing_date };
+    if (can('financials.view')) {
+      try {
+        const deal = await api.get(`/api/broker/files/${file.id}/deal`);
+        dates = deal.file.lifecycle || dates;
+      } catch { /* the summary's closing date stands */ }
     }
     file._lifecycle = dates;
     clearNode(holder);
@@ -594,6 +604,15 @@ async function renderFileDocuments(body, file) {
     progress.outstanding ? el('span', { class: 'pill warn' }, `${progress.outstanding} outstanding`) : null,
     progress.complete ? el('span', { class: 'pill good' }, 'Checklist complete ✓') : null,
     el('div', { class: 'spacer' }),
+    // Only offered when there is something in it. A button that answers "no
+    // documents yet" is worse than no button.
+    can('documents.download') && requests.some((r) => r.current_version)
+      ? el('a', {
+          class: 'btn sm secondary',
+          href: `/api/broker/files/${file.id}/documents/download-all`,
+          title: 'Download every document on this file as one ZIP',
+        }, '⬇ Download all')
+      : null,
     can('documents.request') ? el('button', { class: 'btn sm', onclick: () => requestDocModal(file) }, '+ Request document') : null));
 
   if (requests.length === 0) {

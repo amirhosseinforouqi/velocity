@@ -52,6 +52,11 @@ async function boot() {
   // that answers with a permission error is worse than one that is not there.
   // Settings always stays: every staff member has an account page there,
   // whatever else their role can reach.
+  if (!can('tasks.manage')) {
+    document.getElementById('nav-tasks').classList.add('hidden');
+    const mobileTasks = document.querySelector('.bottom-nav a[data-nav="tasks"]');
+    if (mobileTasks) mobileTasks.classList.add('hidden');
+  }
   if (!can('lenders.view')) document.getElementById('nav-lenders').classList.add('hidden');
   if (!can('reports.view')) document.getElementById('nav-reports').classList.add('hidden');
   if (!can('settings.manage')) document.getElementById('nav-automation').classList.add('hidden');
@@ -98,6 +103,28 @@ function route() {
   // A different file means the cached deal payload is stale.
   if (isFile && DEAL.fileId && DEAL.fileId !== Number(parts[1])) {
     DEAL.fileId = null; DEAL.data = null; DEAL.requestId = null; DEAL.amlData = null;
+  }
+
+  // Hiding a nav link stops people arriving somewhere they cannot use; it does
+  // not stop a bookmark, a shared link, or the back button. One guard here
+  // covers every page, including ones added later — the page says plainly that
+  // the role cannot open it, instead of rendering and then failing on its
+  // first request. The server refuses those requests regardless; this is only
+  // about what a person is shown.
+  const PAGE_PERMISSIONS = {
+    tasks: 'tasks.manage',
+    lenders: 'lenders.view',
+    reports: 'reports.view',
+    automation: 'settings.manage',
+  };
+  const needed = PAGE_PERMISSIONS[parts[0]];
+  if (needed && !can(needed)) {
+    setView(el('div', { class: 'card empty' },
+      el('div', { class: 'big' }, '🔒'),
+      el('h3', null, 'Not available to your role'),
+      el('p', null, 'Ask an administrator if you need access to this area.'),
+      el('a', { class: 'btn sm secondary', href: '#/dashboard' }, 'Back to dashboard')));
+    return;
   }
 
   if (parts[0] === 'clients' && parts[1] === 'new') renderNewClient();

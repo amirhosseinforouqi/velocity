@@ -731,6 +731,46 @@ function register(router) {
   });
 
   /**
+   * Send a staff member a password reset link.
+   *
+   * Deliberately a link rather than a password an administrator reads out:
+   * the link expires, is single use, and ends with a password only that person
+   * has ever seen. It does not change anything on its own, so their current
+   * password keeps working until they actually use it — which is what makes it
+   * safe to send when someone merely thinks they have been locked out.
+   *
+   * The link comes back in the response as well, because email is the part
+   * most likely to be misconfigured; an administrator can hand it over
+   * directly rather than being stuck.
+   */
+  router.post('/api/settings/users/:id/password-reset', manageUsers, async (ctx) => {
+    const user = await get("SELECT * FROM users WHERE id = ? AND role != 'client'", idParam(ctx.params.id));
+    if (!user) throw new ApiError(404, 'User not found.', 'not_found');
+
+    const token = await createAuthToken(user.id, 'reset', 24);
+    const link = `${portalBaseUrl()}/reset?token=${token}`;
+
+    let emailed = true;
+    try {
+      await sendTemplate('password_reset', {
+        toEmail: user.email,
+        toName: `${user.first_name} ${user.last_name}`.trim() || user.email,
+        userId: user.id,
+        vars: { client_first_name: user.first_name || user.email, portal_link: link },
+        redact: [token],
+      });
+    } catch (err) {
+      // A reset that could not be emailed is still a usable reset — the link
+      // is in the response — so this reports rather than fails.
+      emailed = false;
+      console.warn('[settings] password reset email failed:', err.message);
+    }
+
+    await audit(ctx.user.id, 'password_reset_sent', 'user', user.id, ctx.ip, { email: user.email, emailed });
+    return { ok: true, reset_link: link, emailed, expires_hours: 24 };
+  });
+
+  /**
    * Clear a staff member's second factor after a lost phone.
    *
    * Deliberately an administrator action rather than a self-service reset:

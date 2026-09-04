@@ -165,6 +165,62 @@ test('the grid is served the groups, not just the raw keys', async () => {
   );
 });
 
+test('an administrator can send a staff member a reset link', async () => {
+  const id = await invite('forgot@test.local', 'manager');
+  const db = require('../server/db');
+  const { hashPassword } = require('../server/auth');
+  const original = 'Harbour-Lantern-Quiet-42';
+  await db.run(
+    "UPDATE users SET password_hash = ?, status = 'active', must_change_password = 0 WHERE id = ?",
+    await hashPassword(original), id
+  );
+
+  const res = await admin.post(`/api/settings/users/${id}/password-reset`, {});
+  assert.equal(res.status, 200, JSON.stringify(res.data));
+  assert.match(res.data.reset_link, /\/reset\?token=/);
+
+  // Sending a link changes nothing on its own — which is what makes it safe to
+  // send to someone who only thinks they are locked out.
+  await clearRateLimits();
+  const { makeClient } = require('./helpers');
+  assert.equal((await makeClient(ctx.base).post('/api/auth/login', {
+    email: 'forgot@test.local', password: original,
+  })).status, 200, 'their current password still works');
+
+  // Using it does, and the new password is one only they have seen.
+  const token = new URL(res.data.reset_link).searchParams.get('token');
+  await clearRateLimits();
+  const chosen = 'Quartz-Meadow-Bridge-31';
+  const used = await makeClient(ctx.base).post('/api/auth/reset', { token, password: chosen });
+  assert.equal(used.status, 200, JSON.stringify(used.data));
+
+  await clearRateLimits();
+  assert.equal((await makeClient(ctx.base).post('/api/auth/login', {
+    email: 'forgot@test.local', password: chosen,
+  })).status, 200, 'the password they chose works');
+
+  await clearRateLimits();
+  assert.equal((await makeClient(ctx.base).post('/api/auth/login', {
+    email: 'forgot@test.local', password: original,
+  })).status, 401, 'and the old one no longer does');
+
+  // Single use.
+  await clearRateLimits();
+  const replay = await makeClient(ctx.base).post('/api/auth/reset', { token, password: chosen });
+  assert.equal(replay.status, 400);
+});
+
+test('sending a reset is an auditable action, and needs users.manage', async () => {
+  const db = require('../server/db');
+  const row = await db.get("SELECT meta FROM audit_log WHERE action = 'password_reset_sent' ORDER BY id DESC LIMIT 1");
+  assert.ok(row, 'the reset is recorded');
+  assert.match(row.meta, /forgot@test\.local/);
+
+  const { makeClient } = require('./helpers');
+  const id = await invite('protected.reset@test.local');
+  assert.equal((await makeClient(ctx.base).post(`/api/settings/users/${id}/password-reset`, {})).status, 401);
+});
+
 test('an unused staff account can be deleted outright', async () => {
   const id = await invite('unused@test.local');
   const res = await admin.del(`/api/settings/users/${id}`);

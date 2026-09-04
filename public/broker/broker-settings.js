@@ -830,6 +830,23 @@ async function renderTeamSettings(body) {
             },
           }, u.status === 'disabled' ? 'Enable' : 'Disable'),
           el('button', {
+            class: 'btn sm secondary',
+            onclick: async (e) => {
+              const ok = await confirmDialog(
+                `Send ${u.first_name} a password reset link? It is emailed to ${u.email}, expires in 24 hours and can be used once. ` +
+                'Their current password keeps working until they use it.',
+                { confirmLabel: 'Send reset link' }
+              );
+              if (!ok) return;
+              e.target.disabled = true;
+              try {
+                const res = await api.post(`/api/settings/users/${u.id}/password-reset`, {});
+                resetLinkModal(u, res);
+              } catch (err) { toast(err.message, 'bad'); }
+              e.target.disabled = false;
+            },
+          }, 'Reset password'),
+          el('button', {
             class: 'btn sm secondary', style: 'color:var(--bad)',
             onclick: async () => {
               const ok = await confirmDialog(
@@ -929,6 +946,33 @@ async function permissionMatrix() {
       'What each role can do, for everyone who holds it. Administrators always have everything, so their column cannot be changed.'),
     el('div', { class: 'table-wrap' }, table),
     el('div', { style: 'margin-top:14px' }, save));
+}
+
+/**
+ * Show the reset link after sending it.
+ *
+ * The link is shown even when the email went out, because email is the part
+ * most likely to be misconfigured or delayed — an administrator standing next
+ * to the person should not have to wait on a mail server to unblock them.
+ */
+function resetLinkModal(user, res) {
+  openModal('Password reset sent',
+    el('div', null,
+      el('p', { class: 'muted' }, res.emailed
+        ? `A reset link has been emailed to ${user.email}.`
+        : `The email could not be sent, so pass this link to ${user.first_name} yourself.`),
+      el('div', { class: 'card tight' },
+        el('div', { class: 'faint' }, `Reset link — expires in ${res.expires_hours} hours, works once`),
+        el('div', { style: 'font-weight:600;word-break:break-all' }, res.reset_link)),
+      el('p', { class: 'faint' },
+        'Their current password keeps working until they use this link, and they choose the new one themselves — nobody else ever sees it.')),
+    (close) => [
+      el('button', {
+        class: 'btn secondary',
+        onclick: () => { navigator.clipboard?.writeText(res.reset_link).then(() => toast('Link copied.', 'good')); },
+      }, 'Copy link'),
+      el('button', { class: 'btn', onclick: close }, 'Done'),
+    ]);
 }
 
 function staffModal() {

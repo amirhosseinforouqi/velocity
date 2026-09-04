@@ -24,6 +24,14 @@ const { saveRequestBody, readStored } = require('../storage');
 const { HANDLED } = require('../router');
 const scan = require('../scan');
 const aiReview = require('../ai-review');
+const { createZip } = require('../zip');
+
+/**
+ * Ceiling on a bundled download. A serverless function builds the whole
+ * archive in memory before sending it, so this is a memory limit as much as a
+ * courtesy — past it the honest answer is "download them individually".
+ */
+const MAX_ZIP_BYTES = 200 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1399,6 +1407,79 @@ function register(router) {
         "frame-ancestors 'self'; sandbox",
     });
     ctx.res.end(bytes);
+    return HANDLED;
+  });
+
+  /**
+   * Every document on a file, as one ZIP.
+   *
+   * Downloading eight documents one at a time is the tedium this removes, and
+   * it is the same disclosure as those eight downloads — so it needs the same
+   * permission, and each file in it is logged individually. Only the current
+   * version of each request is included: earlier versions are superseded, and
+   * an archive containing three revisions of the same pay stub is worse than
+   * one containing the one that counts.
+   */
+  router.get('/api/broker/files/:id/documents/download-all', requirePermission('documents.download'), async (ctx) => {
+    const file = await fileOrThrow(idParam(ctx.params.id));
+    const requests = await all(
+      `SELECT r.*, dt.name AS document_name, a.first_name, a.last_name
+         FROM document_requests r
+         LEFT JOIN document_types dt ON dt.id = r.document_type_id
+         LEFT JOIN applicants a ON a.id = r.applicant_id
+        WHERE r.file_id = ?
+        ORDER BY r.id`,
+      file.id
+    );
+
+    const entries = [];
+    const skipped = [];
+    let total = 0;
+    for (const r of requests) {
+      const version = await get(
+        'SELECT * FROM document_versions WHERE request_id = ? ORDER BY id DESC LIMIT 1', r.id
+      );
+      if (!version) continue;
+      if (!scan.isServable(version)) {
+        // A quarantined or still-scanning file is exactly what must not be
+        // handed over in bulk without anybody noticing.
+        skipped.push(r.document_name);
+        continue;
+      }
+      const bytes = await readStored(version.stored_name, parseJsonSafe(version.enc_envelope, null));
+      total += bytes.length;
+      if (total > MAX_ZIP_BYTES) {
+        throw new ApiError(
+          413,
+          'These documents are too large to bundle in one download. Download them individually.',
+          'too_large'
+        );
+      }
+      const ext = (version.original_name.match(/\.[A-Za-z0-9]+$/) || [''])[0];
+      const who = r.applicant_id ? `${r.first_name} ${r.last_name}`.trim() : 'File';
+      entries.push({
+        name: `${who} - ${r.document_name}${ext}`,
+        data: bytes,
+        date: new Date(version.uploaded_at),
+      });
+      await audit(ctx.user.id, 'document_downloaded', 'document_version', version.id, ctx.ip, { bulk: true });
+    }
+
+    if (entries.length === 0) {
+      throw new ApiError(404, 'There are no documents on this file to download yet.', 'nothing_to_download');
+    }
+
+    const zip = createZip(entries);
+    await audit(ctx.user.id, 'documents_bulk_downloaded', 'client_file', file.id, ctx.ip,
+      { documents: entries.length, skipped: skipped.length });
+    ctx.res.writeHead(200, {
+      'Content-Type': 'application/zip',
+      'Content-Length': zip.length,
+      'Content-Disposition': `attachment; filename="${file.file_number}-documents.zip"`,
+      'Cache-Control': 'private, no-store',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    ctx.res.end(zip);
     return HANDLED;
   });
 

@@ -298,6 +298,14 @@ describe('role permissions (audit finding H6)', () => {
     assert.equal((await alice.get('/api/settings/meta')).status, 403);
   });
 
+  test('a role without clients.edit cannot assign a file, however it is asked', async () => {
+    // The UI stops showing the control, but that is a courtesy: the answer has
+    // to be the same for anyone who calls the endpoint directly.
+    const res = await sam.post(`/api/broker/files/${fileA}/assign`, { broker_id: null });
+    assert.equal(res.status, 403);
+    assert.equal(res.data.code, 'forbidden');
+  });
+
   test('a permission change drops the affected user\'s sessions immediately', async () => {
     const before = await sam.get('/api/broker/dashboard');
     assert.equal(before.status, 200);
