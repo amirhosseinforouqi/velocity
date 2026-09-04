@@ -189,6 +189,17 @@ input::placeholder, textarea::placeholder { color: var(--ink-faint); }
   .form-row.cols-4 { grid-template-columns: repeat(4, 1fr); }
 }
 .form-error { color: var(--bad); font-size: 0.86rem; margin: 6px 0; font-weight: 600; }
+
+/* A field the form stopped on. Marked on submit, cleared as soon as it is
+   typed into, so the red only ever points at what is still missing. */
+.field input.invalid, .field select.invalid, .field textarea.invalid {
+  border-color: var(--bad);
+  background: color-mix(in srgb, var(--bad) 6%, transparent);
+}
+.field input.invalid:focus, .field select.invalid:focus, .field textarea.invalid:focus {
+  outline-color: var(--bad);
+}
+.field.invalid > span { color: var(--bad); }
 .hint { color: var(--ink-faint); font-size: 0.79rem; margin-top: -8px; margin-bottom: var(--s3); }
 
 /* Money and rate inputs read right-aligned in the monospace face, so a

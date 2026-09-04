@@ -752,6 +752,17 @@ async function loadWizardChecklist() {
   wizardStepDocuments();
 }
 
+// The property kinds this brokerage actually writes deals on. Typed free text
+// produced "condo", "Condo", "condominium" and "apt" for the same thing,
+// which made the property column useless to report on.
+const PROPERTY_TYPES = [
+  'Single-Detached House',
+  'Semi-Detached House',
+  'Townhouse (Row House)',
+  'Condominium (Condo)',
+  'Pre-construction',
+];
+
 const CATEGORY_LABEL = {
   identity: 'Identity', credit: 'Credit', income: 'Income / Tax',
   property: 'Property', financial: 'Assets & Banking', corporate: 'Corporate', other: 'Other',
@@ -904,9 +915,7 @@ function wizardStepDetails() {
     middle_name: el('input', { type: 'text', value: wiz.client.middle_name || '' }),
     last_name: el('input', { type: 'text', value: wiz.client.last_name || '' }),
     email: el('input', { type: 'email', value: wiz.client.email || '' }),
-    phone: el('input', { type: 'tel', value: wiz.client.phone || '' }),
-    dob: el('input', { type: 'date', value: wiz.client.dob || '' }),
-    address: el('input', { type: 'text', value: wiz.client.address || '' }),
+    phone: el('input', { type: 'tel', value: wiz.client.phone || '', required: '' }),
   };
   // Money is typed and read with thousand separators — brokers work in
   // hundreds of thousands and an unseparated 800000 is easy to misread. The
@@ -915,7 +924,9 @@ function wizardStepDetails() {
     purchase_price: moneyInput('800,000'),
     down_payment_pct: el('input', { type: 'number', step: '0.5', min: '0', max: '100', placeholder: '20' }),
     mortgage_amount: moneyInput(''),
-    property_type: el('input', { type: 'text', placeholder: 'e.g. Detached, Condo' }),
+    property_type: el('select', null,
+      el('option', { value: '' }, 'Select a property type…'),
+      PROPERTY_TYPES.map((name) => el('option', { value: name }, name))),
     closing_date: el('input', { type: 'date' }),
     purpose: el('textarea', { placeholder: 'Anything worth noting about this application' }),
   };
@@ -976,8 +987,43 @@ function wizardStepDetails() {
   const errorLine = el('p', { class: 'form-error' });
   const submitBtn = el('button', { class: 'btn' }, 'Create client & send welcome email');
 
+  // Name, email and mobile are what the welcome email and every later
+  // reminder depend on, so they are checked here rather than discovered as a
+  // server error after the co-applicant section has been filled in.
+  const REQUIRED = [
+    [f.first_name, 'a first name', 'first name'],
+    [f.last_name, 'a last name', 'last name'],
+    [f.email, 'an email address', 'email'],
+    [f.phone, 'a mobile phone number', 'mobile phone'],
+  ];
+
+  // Marked on submit and cleared on the next keystroke, so every empty
+  // required field is visible at once rather than one error at a time.
+  for (const [input] of REQUIRED) {
+    input.addEventListener('input', () => {
+      input.classList.remove('invalid');
+      if (input.closest('.field')) input.closest('.field').classList.remove('invalid');
+    });
+  }
+
   async function submit(ignoreDuplicates) {
     errorLine.textContent = '';
+    const missing = REQUIRED.filter(([input]) => !input.value.trim());
+    for (const [input] of REQUIRED) {
+      input.classList.remove('invalid');
+      if (input.closest('.field')) input.closest('.field').classList.remove('invalid');
+    }
+    if (missing.length) {
+      for (const [input] of missing) {
+        input.classList.add('invalid');
+        if (input.closest('.field')) input.closest('.field').classList.add('invalid');
+      }
+      errorLine.textContent = missing.length === 1
+        ? `Please enter ${missing[0][1]}.`
+        : `Please fill in the fields marked in red: ${missing.map(([, , short]) => short).join(', ')}.`;
+      missing[0][0].focus();
+      return;
+    }
     submitBtn.disabled = true;
     const payload = {
       client: {
@@ -1059,12 +1105,10 @@ function wizardStepDetails() {
         el('label', { class: 'field' }, el('span', null, 'First name *'), f.first_name),
         el('label', { class: 'field' }, el('span', null, 'Middle name'), f.middle_name),
         el('label', { class: 'field' }, el('span', null, 'Last name *'), f.last_name)),
-      el('div', { class: 'form-row cols-3' },
-        el('label', { class: 'field' }, el('span', null, 'Date of birth'), f.dob),
+      el('div', { class: 'form-row cols-2' },
         el('label', { class: 'field' }, el('span', null, 'Email *'), f.email),
-        el('label', { class: 'field' }, el('span', null, 'Mobile phone'), f.phone)),
-      el('p', { class: 'faint' }, 'The email address becomes the client\'s portal username.'),
-      el('label', { class: 'field' }, el('span', null, 'Current address'), f.address)),
+        el('label', { class: 'field' }, el('span', null, 'Mobile phone *'), f.phone)),
+      el('p', { class: 'faint' }, 'The email address becomes the client\'s portal username.')),
     el('div', { class: 'card' },
       el('h3', null, 'Application'),
       el('div', { class: 'form-row cols-3' },
