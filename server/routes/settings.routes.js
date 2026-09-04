@@ -9,7 +9,7 @@ const { ApiError, now, str, intOrNull, bool, isEmail, normalizeEmail, parseJsonS
 const { audit } = require('../log');
 const { previewTemplate, sendTemplate, portalBaseUrl, transportName } = require('../emails');
 const { publicUser } = require('../serialize');
-const { ALL_PERMISSIONS } = require('../seed');
+const { ALL_PERMISSIONS, permissionGroups } = require('../seed');
 const mfa = require('../mfa');
 
 const manage = requirePermission('settings.manage');
@@ -196,6 +196,7 @@ function register(router) {
     employment_statuses: await all('SELECT * FROM employment_statuses ORDER BY sort'),
     document_types: await all('SELECT * FROM document_types ORDER BY sort'),
     permissions: ALL_PERMISSIONS,
+    permission_groups: permissionGroups(),
     staff_roles: await offeredRoles(),
     qualification: await getSetting('qualification', {}),
     provinces: ['AB', 'BC', 'MB', 'NB', 'NL', 'NS', 'NT', 'NU', 'ON', 'PE', 'QC', 'SK', 'YT'],

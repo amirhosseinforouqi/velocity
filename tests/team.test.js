@@ -134,6 +134,37 @@ test('an account already holding a retired role keeps working', async () => {
   assert.ok(!after.data.staff_roles.includes('broker'), 'and once nobody holds it, it is gone');
 });
 
+test('every permission the platform enforces is named and grouped', async () => {
+  // The grid renders from these groups, so a permission missing from them
+  // would be invisible in Settings and therefore ungrantable — the feature
+  // would look broken rather than new.
+  const { ALL_PERMISSIONS, permissionGroups } = require('../server/seed');
+  const groups = permissionGroups();
+  const described = groups.flatMap((g) => g.permissions.map((p) => p.key));
+
+  assert.deepEqual([...described].sort(), [...ALL_PERMISSIONS].sort());
+  assert.equal(new Set(described).size, described.length, 'no permission appears in two groups');
+
+  for (const group of groups) {
+    assert.ok(group.label, 'every group is named');
+    for (const perm of group.permissions) {
+      assert.ok(perm.label && perm.label !== perm.key, `${perm.key} needs a label in words`);
+      assert.ok(perm.description && perm.description.length > 15, `${perm.key} needs a description`);
+    }
+  }
+});
+
+test('the grid is served the groups, not just the raw keys', async () => {
+  const meta = await admin.get('/api/settings/meta');
+  const groups = meta.data.permission_groups;
+  assert.ok(Array.isArray(groups) && groups.length > 0);
+  assert.equal(
+    groups.flatMap((g) => g.permissions.map((p) => p.key)).length,
+    meta.data.permissions.length,
+    'the grid can render every permission the API enforces'
+  );
+});
+
 test('an unused staff account can be deleted outright', async () => {
   const id = await invite('unused@test.local');
   const res = await admin.del(`/api/settings/users/${id}`);

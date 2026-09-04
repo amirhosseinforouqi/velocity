@@ -308,11 +308,64 @@
 
 .chat-panel { height: 480px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
 
-/* The role count is set from the data, not assumed here: retiring a role
-   changes how many columns exist, and a hardcoded count silently wraps the
-   cells into the wrong rows. */
-.perm-grid { display: grid; grid-template-columns: minmax(160px, 1fr) repeat(var(--role-count, 5), auto); gap: 4px 14px; align-items: center; font-size: 0.85rem; }
-.perm-grid .head { font-weight: 700; font-size: 0.74rem; text-transform: uppercase; color: var(--ink-faint); }
+/* ------------------------------------------------------------------ Role permissions
+
+   A wide table people read across, so the work is in keeping the eye on one
+   row: full-width hover bands, a heading that stays visible while scrolling,
+   and a named column wide enough that nothing is identified by a dotted key
+   alone. */
+.perm-table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+
+/* The topbar is sticky at 57px, so these offsets keep the role names and the
+   group they belong to visible instead of sliding underneath it. */
+.perm-table thead th {
+  position: sticky; top: 57px; z-index: 2;
+  background: var(--card);
+  padding: 10px 8px;
+  font-size: 0.72rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--ink-faint);
+  border-bottom: 1px solid var(--line);
+}
+.perm-table th.perm-role { text-align: center; width: 92px; }
+.perm-table th.perm-name { text-align: left; min-width: 260px; }
+
+.perm-group th {
+  position: sticky; top: 94px; z-index: 1;
+  background: var(--bg-sunken);
+  padding: 8px 10px;
+  text-align: left;
+  font-size: 0.74rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--ink-soft);
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.perm-row > th.perm-name {
+  text-align: left; font-weight: 400;
+  padding: 9px 10px 9px 18px;
+  border-bottom: 1px solid var(--line);
+}
+.perm-row .perm-label { display: block; font-weight: 600; color: var(--ink); }
+.perm-row .perm-desc { display: block; margin-top: 1px; color: var(--ink-soft); font-size: 0.8rem; }
+.perm-row .perm-key {
+  display: inline-block; margin-top: 3px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.71rem; color: var(--ink-faint);
+}
+
+.perm-cell {
+  text-align: center;
+  padding: 9px 8px;
+  border-bottom: 1px solid var(--line);
+}
+.perm-cell input { width: 17px; height: 17px; cursor: pointer; }
+.perm-cell input:disabled { cursor: not-allowed; }
+
+/* The band is what ties a checkbox back to the row it belongs to. */
+.perm-row:hover > th,
+.perm-row:hover > .perm-cell { background: var(--brand-soft); }
+.perm-row:focus-within > th,
+.perm-row:focus-within > .perm-cell { background: var(--brand-soft); }
 
 /* ------------------------------------------------------------------ Bottom bar (phone) */
 

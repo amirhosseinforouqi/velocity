@@ -862,41 +862,73 @@ async function renderTeamSettings(body) {
   }
 }
 
+/**
+ * Who can do what, as a table you can read across.
+ *
+ * The old grid listed raw permission keys in one long column with five
+ * unlabelled checkbox columns beside them, so picking the box for "clients.view
+ * → assistant" meant counting across and hoping. Three things fix that: the
+ * permissions are grouped and named in words, every row is a full-width band
+ * that highlights on hover, and each checkbox sits in its own cell under a
+ * heading that stays put while you scroll.
+ */
 async function permissionMatrix() {
   const { value } = await api.get('/api/settings/config/role_permissions');
-  const perms = BK.meta.permissions;
+  const groups = BK.meta.permission_groups || [];
   const roles = BK.meta.staff_roles;
   const map = value || {};
-  const grid = el('div', {
-    class: 'perm-grid',
-    style: `--role-count:${roles.length}`,
-  }, el('div', { class: 'head' }, 'Permission'), roles.map((r) => el('div', { class: 'head' }, r)));
   const checks = {};
-  for (const p of perms) {
-    grid.append(el('div', null, p));
+
+  const table = el('table', { class: 'perm-table' },
+    el('thead', null, el('tr', null,
+      el('th', { class: 'perm-name' }, 'Permission'),
+      roles.map((r) => el('th', { class: 'perm-role' }, r)))),
+    el('tbody', null, groups.map((group) => [
+      el('tr', { class: 'perm-group' },
+        el('th', { colspan: String(roles.length + 1), scope: 'colgroup' }, group.label)),
+      group.permissions.map((perm) => el('tr', { class: 'perm-row' },
+        el('th', { class: 'perm-name', scope: 'row' },
+          el('span', { class: 'perm-label' }, perm.label),
+          el('span', { class: 'perm-desc' }, perm.description),
+          // The key is what the API and the docs use, so it stays visible —
+          // just no longer as the only thing identifying the row.
+          el('code', { class: 'perm-key' }, perm.key)),
+        roles.map((r) => {
+          const cb = el('input', {
+            type: 'checkbox',
+            checked: (map[r] || []).includes(perm.key) ? '' : undefined,
+            'aria-label': `${r}: ${perm.key}`,
+          });
+          if (r === 'admin') {
+            cb.checked = true;
+            cb.disabled = true;
+            cb.title = 'Administrators always have every permission.';
+          }
+          checks[`${r}:${perm.key}`] = cb;
+          return el('td', { class: 'perm-cell', 'data-role': r }, cb);
+        }))),
+    ])));
+
+  const save = el('button', { class: 'btn' }, 'Save permissions');
+  save.addEventListener('click', async () => {
+    save.disabled = true;
+    const next = {};
     for (const r of roles) {
-      const cb = el('input', { type: 'checkbox', checked: (map[r] || []).includes(p) ? '' : undefined, 'aria-label': `${r}: ${p}` });
-      if (r === 'admin') { cb.checked = true; cb.disabled = true; }
-      checks[`${r}:${p}`] = cb;
-      grid.append(cb);
+      next[r] = BK.meta.permissions.filter((p) => r === 'admin' || (checks[`${r}:${p}`] || {}).checked);
     }
-  }
+    try {
+      await api.put('/api/settings/config/role_permissions', { value: next });
+      toast('Permissions saved.', 'good');
+    } catch (err) { toast(err.message, 'bad'); }
+    save.disabled = false;
+  });
+
   return el('div', { class: 'card' },
     el('h3', null, 'Role permissions'),
-    el('div', { class: 'table-wrap' }, grid),
-    el('button', {
-      class: 'btn', style: 'margin-top:12px',
-      onclick: async (e) => {
-        e.target.disabled = true;
-        const next = {};
-        for (const r of roles) next[r] = perms.filter((p) => r === 'admin' || checks[`${r}:${p}`].checked);
-        try {
-          await api.put('/api/settings/config/role_permissions', { value: next });
-          toast('Permissions saved.', 'good');
-        } catch (err) { toast(err.message, 'bad'); }
-        e.target.disabled = false;
-      },
-    }, 'Save permissions'));
+    el('p', { class: 'muted small' },
+      'What each role can do, for everyone who holds it. Administrators always have everything, so their column cannot be changed.'),
+    el('div', { class: 'table-wrap' }, table),
+    el('div', { style: 'margin-top:14px' }, save));
 }
 
 function staffModal() {

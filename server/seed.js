@@ -41,6 +41,100 @@ const ALL_PERMISSIONS = [
  * entries stay: an account created under one still resolves its permissions
  * from here, so retiring a role never silently strips the people holding it.
  */
+/**
+ * What each permission is called, and what it actually lets someone do.
+ *
+ * The permission grid used to list raw keys — "clients.view", "aml.manage" —
+ * in one long alphabetical-ish column, which made choosing what an assistant
+ * should be able to do an exercise in reading dotted identifiers. The keys are
+ * still the contract; these are how they read to the person deciding.
+ *
+ * Every key in ALL_PERMISSIONS must appear here exactly once; permissionGroups()
+ * asserts that, so a new permission cannot be added and quietly go unlabelled.
+ */
+const PERMISSION_GROUPS = [
+  {
+    label: 'Clients',
+    permissions: [
+      ['clients.view', 'View clients', 'See client files, their details and their progress.'],
+      ['clients.create', 'Create clients', 'Start a new client file and send the portal invitation.'],
+      ['clients.edit', 'Edit clients', 'Change client details, the application and the checklist.'],
+      ['clients.archive', 'Archive clients', 'Close a file so it leaves the active pipeline.'],
+    ],
+  },
+  {
+    label: 'Documents',
+    permissions: [
+      ['documents.view', 'See the checklist', 'See which documents are needed and their status — not the files themselves.'],
+      ['documents.download', 'Open and download files', 'Retrieve the actual document a client uploaded.'],
+      ['documents.upload', 'Upload documents', 'Add a document to a client file on their behalf.'],
+      ['documents.review', 'Accept or reject documents', 'Decide whether an uploaded document is acceptable.'],
+      ['documents.request', 'Request documents', 'Ask a client for a document, and send reminders.'],
+    ],
+  },
+  {
+    label: 'Pipeline and tasks',
+    permissions: [
+      ['stage.change', 'Move files between stages', 'Advance a file, which is what the client sees as progress.'],
+      ['tasks.manage', 'Manage tasks', 'Create, assign and complete tasks.'],
+    ],
+  },
+  {
+    label: 'Communication',
+    permissions: [
+      ['chat.send', 'Message clients', 'Send and reply to messages in the client portal.'],
+      ['notes.manage', 'Write internal notes', 'Add notes on a file. Clients never see these.'],
+      ['emails.view', 'See sent email', 'Read the record of emails the platform sent about a file.'],
+    ],
+  },
+  {
+    label: 'Financials and compliance',
+    permissions: [
+      ['financials.view', 'View financials', "See income, assets, liabilities and a file's qualification."],
+      ['financials.edit', 'Edit financials', 'Change the figures a qualification is calculated from.'],
+      ['aml.view', 'View AML and identity', 'See identity verification and the FINTRAC risk assessment.'],
+      ['aml.manage', 'Complete AML checks', 'Record identity verification and answer the risk questions.'],
+    ],
+  },
+  {
+    label: 'Lenders and reporting',
+    permissions: [
+      ['lenders.view', 'View lenders and products', 'See the lender panel and match products to a file.'],
+      ['lenders.manage', 'Manage the lender panel', 'Add, edit and remove lenders and their products.'],
+      ['reports.view', 'View reports', 'See pipeline, volume and relationship reporting.'],
+    ],
+  },
+  {
+    label: 'Brokerage administration',
+    permissions: [
+      ['users.manage', 'Manage the team', 'Invite staff, change their role, disable and delete accounts.'],
+      ['settings.manage', 'Manage settings', 'Change every brokerage setting, including these permissions.'],
+      ['audit.view', 'View the audit log', 'Read the tamper-evident record of who did what.'],
+    ],
+  },
+];
+
+/**
+ * The groups, with a guarantee that they describe exactly the permissions the
+ * platform enforces. A key that exists in code but not here would be invisible
+ * in the grid, and so silently ungrantable.
+ */
+function permissionGroups() {
+  const described = PERMISSION_GROUPS.flatMap((g) => g.permissions.map(([key]) => key));
+  const missing = ALL_PERMISSIONS.filter((p) => !described.includes(p));
+  const unknown = described.filter((p) => !ALL_PERMISSIONS.includes(p));
+  if (missing.length || unknown.length) {
+    throw new Error(
+      `Permission groups are out of step with ALL_PERMISSIONS. Missing: ${missing.join(', ') || 'none'}. `
+      + `Unknown: ${unknown.join(', ') || 'none'}.`
+    );
+  }
+  return PERMISSION_GROUPS.map((g) => ({
+    label: g.label,
+    permissions: g.permissions.map(([key, label, description]) => ({ key, label, description })),
+  }));
+}
+
 const DEFAULT_ROLE_PERMISSIONS = {
   admin: ALL_PERMISSIONS,
   manager: ALL_PERMISSIONS.filter((p) => p !== 'settings.manage'),
@@ -914,6 +1008,7 @@ module.exports = {
   applyCatalogUpgrades,
   upgradeWelcomeTemplate,
   ALL_PERMISSIONS,
+  permissionGroups,
   DEFAULT_ROLE_PERMISSIONS,
   PERMISSION_UPGRADES,
   DEFAULT_EMAIL_TEMPLATES: EMAIL_TEMPLATES,
