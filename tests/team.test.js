@@ -71,6 +71,69 @@ test('permissions granted to the assistant role actually take effect', async () 
   assert.deepEqual(await permissionsForRole('assistant'), ['clients.view', 'clients.edit', 'documents.view']);
 });
 
+test('a stale role map cannot lock the administrator out of the permission grid', async () => {
+  // Exactly the failure an administrator hit in production: every save of the
+  // permission grid answered "You do not have permission to do that", because
+  // the stored map for admin no longer listed settings.manage.
+  const db = require('../server/db');
+  const { ALL_PERMISSIONS } = require('../server/seed');
+  await db.setSetting('role_permissions', {
+    admin: ALL_PERMISSIONS.filter((p) => p !== 'settings.manage'),
+    assistant: ['clients.view'],
+  });
+
+  const save = await admin.put('/api/settings/config/role_permissions', {
+    value: { admin: ALL_PERMISSIONS, assistant: ['clients.view', 'clients.edit'] },
+  });
+  assert.equal(save.status, 200, JSON.stringify(save.data));
+
+  const { permissionsForRole } = require('../server/auth');
+  assert.deepEqual(await permissionsForRole('assistant'), ['clients.view', 'clients.edit'],
+    'and the change the administrator was trying to make actually landed');
+});
+
+test('broker and processor are no longer offered', async () => {
+  const meta = await admin.get('/api/settings/meta');
+  assert.deepEqual(meta.data.staff_roles, ['admin', 'manager', 'assistant']);
+
+  await clearRateLimits();
+  const invited = await admin.post('/api/settings/users', {
+    email: 'retired.role@test.local', first_name: 'Kai', last_name: 'Sorensen', role: 'broker',
+  });
+  assert.equal(invited.status, 400);
+  assert.equal(invited.data.code, 'bad_role');
+});
+
+test('an account already holding a retired role keeps working', async () => {
+  // Retiring a role is about what can be assigned next. Someone who is already
+  // a broker still signs in, still resolves permissions, and still owns their
+  // files — otherwise a settings change would silently strand a colleague.
+  const db = require('../server/db');
+  const id = await invite('still.a.broker@test.local', 'manager');
+  await db.run("UPDATE users SET role = 'broker' WHERE id = ?", id);
+
+  const { permissionsForRole } = require('../server/auth');
+  const perms = await permissionsForRole('broker');
+  assert.ok(perms.includes('clients.view'), 'their permissions still resolve');
+
+  // And while they hold it, the role stays visible so their row is not blank
+  // and their column does not vanish from the permission grid.
+  const meta = await admin.get('/api/settings/meta');
+  assert.ok(meta.data.staff_roles.includes('broker'), meta.data.staff_roles.join(', '));
+
+  // They can be moved to a current role, but nobody can be moved into theirs.
+  const other = await invite('moved.in@test.local', 'assistant');
+  const backwards = await admin.patch(`/api/settings/users/${other}`, { role: 'processor' });
+  assert.equal(backwards.status, 400);
+  assert.equal(backwards.data.code, 'bad_role');
+
+  assert.equal((await admin.patch(`/api/settings/users/${id}`, { role: 'manager' })).status, 200,
+    'moving out of a retired role is exactly what should be possible');
+
+  const after = await admin.get('/api/settings/meta');
+  assert.ok(!after.data.staff_roles.includes('broker'), 'and once nobody holds it, it is gone');
+});
+
 test('an unused staff account can be deleted outright', async () => {
   const id = await invite('unused@test.local');
   const res = await admin.del(`/api/settings/users/${id}`);
@@ -85,7 +148,7 @@ test('an unused staff account can be deleted outright', async () => {
 });
 
 test('a staff account holding client work is refused, and told to disable instead', async () => {
-  const id = await invite('busy@test.local', 'broker');
+  const id = await invite('busy@test.local', 'manager');
   await clearRateLimits();
   const created = await admin.post('/api/broker/clients', {
     client: { first_name: 'Ola', last_name: 'Bergstrom', email: 'ola.b@example.com', employment_type: 'employee' },

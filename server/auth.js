@@ -346,7 +346,22 @@ async function completeLogin(user, ip, userAgent) {
 // ---------------------------------------------------------------------------
 // Authorization
 
+/**
+ * Every staff role the system recognises.
+ *
+ * "broker" and "processor" are no longer offered — see RETIRED_ROLES — but
+ * they stay here so an account created under one keeps working: it can still
+ * sign in, its permissions still resolve, and its client files still show who
+ * they belong to. Removing a role is about what can be assigned next, not
+ * about invalidating people who already hold it.
+ */
 const STAFF_ROLES = ['admin', 'manager', 'broker', 'processor', 'assistant'];
+
+/** Roles this brokerage assigns to new and existing staff. */
+const ASSIGNABLE_ROLES = ['admin', 'manager', 'assistant'];
+
+/** Recognised, but no longer offered. Nobody can be moved into one. */
+const RETIRED_ROLES = STAFF_ROLES.filter((r) => !ASSIGNABLE_ROLES.includes(r));
 
 /**
  * Permissions the administrator role can never lose.
@@ -509,6 +524,8 @@ module.exports = {
   recordLoginAttempt,
   purgeOldLoginAttempts,
   STAFF_ROLES,
+  ASSIGNABLE_ROLES,
+  RETIRED_ROLES,
   permissionsForRole,
   hasPermission,
   requireAuth,

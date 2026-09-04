@@ -34,6 +34,13 @@ const ALL_PERMISSIONS = [
   'lenders.manage',
 ];
 
+/**
+ * Defaults per role.
+ *
+ * broker and processor are no longer offered when inviting someone, but their
+ * entries stay: an account created under one still resolves its permissions
+ * from here, so retiring a role never silently strips the people holding it.
+ */
 const DEFAULT_ROLE_PERMISSIONS = {
   admin: ALL_PERMISSIONS,
   manager: ALL_PERMISSIONS.filter((p) => p !== 'settings.manage'),

@@ -308,7 +308,10 @@
 
 .chat-panel { height: 480px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
 
-.perm-grid { display: grid; grid-template-columns: minmax(160px, 1fr) repeat(5, auto); gap: 4px 14px; align-items: center; font-size: 0.85rem; }
+/* The role count is set from the data, not assumed here: retiring a role
+   changes how many columns exist, and a hardcoded count silently wraps the
+   cells into the wrong rows. */
+.perm-grid { display: grid; grid-template-columns: minmax(160px, 1fr) repeat(var(--role-count, 5), auto); gap: 4px 14px; align-items: center; font-size: 0.85rem; }
 .perm-grid .head { font-weight: 700; font-size: 0.74rem; text-transform: uppercase; color: var(--ink-faint); }
 
 /* ------------------------------------------------------------------ Bottom bar (phone) */

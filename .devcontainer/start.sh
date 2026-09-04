@@ -21,9 +21,27 @@ if [ -n "${CODESPACE_NAME:-}" ]; then
   export APP_URL="https://${CODESPACE_NAME}-3000.${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN:-app.github.dev}"
 fi
 
+# A running server holds its JavaScript in memory: `git pull` updates the files
+# on disk, but every route, permission check and job the server actually runs
+# is still the old code. The symptom is a page that shows a new feature while
+# the API behind it behaves like the previous version — so if any source file
+# is newer than the process, restart rather than report success.
 if curl -sf http://127.0.0.1:3000/health > /dev/null 2>&1; then
-  echo "Mortgage platform is already running at http://localhost:3000"
-  exit 0
+  UPTIME=$(curl -sf http://127.0.0.1:3000/health | sed -n 's/.*"uptime":\([0-9]*\).*/\1/p')
+  STARTED=$(( $(date +%s) - ${UPTIME:-0} ))
+  NEWEST=$(find server scripts api public package.json -newermt "@${STARTED}" -type f -print -quit 2>/dev/null)
+
+  if [ -z "$NEWEST" ]; then
+    echo "Mortgage platform is already running at http://localhost:3000"
+    exit 0
+  fi
+
+  echo "Code has changed since the server started ($NEWEST) — restarting it."
+  pkill -f 'node server/index.js' 2>/dev/null || true
+  for _ in $(seq 1 20); do
+    curl -sf http://127.0.0.1:3000/health > /dev/null 2>&1 || break
+    sleep 0.5
+  done
 fi
 
 # Detach into a new session, not just the background.

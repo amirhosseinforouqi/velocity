@@ -2,7 +2,8 @@
 
 const { run, get, all, insert, getSetting, setSetting } = require('../db');
 const {
-  requireStaff, requirePermission, createAuthToken, STAFF_ROLES, destroyAllSessions,
+  requireStaff, requirePermission, createAuthToken, STAFF_ROLES, ASSIGNABLE_ROLES,
+  RETIRED_ROLES, destroyAllSessions,
 } = require('../auth');
 const { ApiError, now, str, intOrNull, bool, isEmail, normalizeEmail, parseJsonSafe } = require('../util');
 const { audit } = require('../log');
@@ -18,6 +19,23 @@ const EDITABLE_CONFIG_KEYS = [
   'brokerage', 'client_steps', 'reminders', 'automation', 'uploads', 'security', 'retention',
   'role_permissions', 'notifications', 'ai_review', 'qualification', 'backups',
 ];
+
+/**
+ * The roles the UI shows.
+ *
+ * Assignable roles always, plus any retired role a staff account still holds
+ * — dropping those from the list would leave that person's row showing a
+ * blank role and their column missing from the permission grid, which is how
+ * a role quietly loses the permissions it still grants.
+ */
+async function offeredRoles() {
+  const held = await all(
+    "SELECT DISTINCT role FROM users WHERE role = ANY(?::text[]) AND status <> 'disabled'",
+    RETIRED_ROLES
+  );
+  const stillUsed = held.map((r) => r.role);
+  return STAFF_ROLES.filter((r) => ASSIGNABLE_ROLES.includes(r) || stillUsed.includes(r));
+}
 
 /** Route params are user input: reject non-numeric ids as 404, never 500. */
 function idParam(value) {
@@ -178,7 +196,7 @@ function register(router) {
     employment_statuses: await all('SELECT * FROM employment_statuses ORDER BY sort'),
     document_types: await all('SELECT * FROM document_types ORDER BY sort'),
     permissions: ALL_PERMISSIONS,
-    staff_roles: STAFF_ROLES,
+    staff_roles: await offeredRoles(),
     qualification: await getSetting('qualification', {}),
     provinces: ['AB', 'BC', 'MB', 'NB', 'NL', 'NS', 'NT', 'NU', 'ON', 'PE', 'QC', 'SK', 'YT'],
     integrations: {
@@ -578,7 +596,7 @@ function register(router) {
     const b = ctx.body || {};
     const email = normalizeEmail(b.email);
     if (!isEmail(email)) throw new ApiError(400, 'A valid email is required.', 'bad_email');
-    if (!STAFF_ROLES.includes(b.role)) throw new ApiError(400, 'Choose a valid role.', 'bad_role');
+    if (!ASSIGNABLE_ROLES.includes(b.role)) throw new ApiError(400, 'Choose a valid role.', 'bad_role');
     if (await get('SELECT id FROM users WHERE email = ?', email)) {
       throw new ApiError(400, 'A user with that email already exists.', 'email_conflict');
     }
@@ -614,6 +632,9 @@ function register(router) {
     const b = ctx.body || {};
     if (user.id === ctx.user.id && (b.role !== undefined || b.status === 'disabled')) {
       throw new ApiError(400, 'You cannot change your own role or disable your own account.', 'self_change');
+    }
+    if (b.role !== undefined && b.role !== user.role && !ASSIGNABLE_ROLES.includes(b.role)) {
+      throw new ApiError(400, `"${b.role}" is no longer one of this brokerage's roles.`, 'bad_role');
     }
     const nextRole = b.role !== undefined && STAFF_ROLES.includes(b.role) ? b.role : user.role;
     const nextStatus = b.status !== undefined && ['active', 'invited', 'disabled'].includes(b.status) ? b.status : user.status;

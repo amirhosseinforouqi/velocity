@@ -303,7 +303,8 @@ describe('role permissions (audit finding H6)', () => {
     assert.equal(before.status, 200);
     const users = await admin.get('/api/settings/users');
     const samRow = users.data.users.find((u) => u.email === 'sam@test.local');
-    await admin.patch(`/api/settings/users/${samRow.id}`, { role: 'processor' });
+    // Any real role change; 'manager' is one the brokerage still offers.
+    await admin.patch(`/api/settings/users/${samRow.id}`, { role: 'manager' });
     const after = await sam.get('/api/broker/dashboard');
     assert.equal(after.status, 401, 'the old session must not survive a role change');
     await admin.patch(`/api/settings/users/${samRow.id}`, { role: 'assistant' });

@@ -512,9 +512,11 @@ test('a role without financials.view cannot reach the financial picture', async 
 
 test('read-only financial access cannot write', async () => {
   await clearRateLimits();
-  // A processor may view financials and AML but not edit them.
+  // A processor may view financials and AML but not edit them. The role is
+  // retired — it cannot be assigned any more — but accounts that hold one
+  // still resolve their permissions, which is exactly what this checks.
   const created = await admin.post('/api/settings/users', {
-    email: 'processor.deal@test.local', first_name: 'Wren', last_name: 'Aoki', role: 'processor',
+    email: 'processor.deal@test.local', first_name: 'Wren', last_name: 'Aoki', role: 'manager',
   });
   assert.equal(created.status, 200, JSON.stringify(created.data));
 
@@ -522,7 +524,7 @@ test('read-only financial access cannot write', async () => {
   const { hashPassword } = require('../server/auth');
   const password = 'Cobalt-Willow-Anchor-77';
   await db.run(
-    "UPDATE users SET password_hash = ?, status = 'active', must_change_password = 0, mfa_secret = NULL WHERE lower(email) = ?",
+    "UPDATE users SET role = 'processor', password_hash = ?, status = 'active', must_change_password = 0, mfa_secret = NULL WHERE lower(email) = ?",
     await hashPassword(password), 'processor.deal@test.local'
   );
   // Processors require MFA by default; enrol so the session is usable.

@@ -867,8 +867,10 @@ async function permissionMatrix() {
   const perms = BK.meta.permissions;
   const roles = BK.meta.staff_roles;
   const map = value || {};
-  const grid = el('div', { class: 'perm-grid' }, el('div', { class: 'head' }, 'Permission'),
-    roles.map((r) => el('div', { class: 'head' }, r)));
+  const grid = el('div', {
+    class: 'perm-grid',
+    style: `--role-count:${roles.length}`,
+  }, el('div', { class: 'head' }, 'Permission'), roles.map((r) => el('div', { class: 'head' }, r)));
   const checks = {};
   for (const p of perms) {
     grid.append(el('div', null, p));
@@ -901,7 +903,8 @@ function staffModal() {
   const first = el('input', { type: 'text' });
   const last = el('input', { type: 'text' });
   const email = el('input', { type: 'email' });
-  const role = el('select', null, BK.meta.staff_roles.map((r) => el('option', { value: r, selected: r === 'broker' ? '' : undefined }, r)));
+  const role = el('select', null, BK.meta.staff_roles.map((r) =>
+    el('option', { value: r, selected: r === 'assistant' ? '' : undefined }, r)));
   openModal('Invite a team member',
     el('div', null,
       el('div', { class: 'form-row cols-2' },
