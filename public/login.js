@@ -71,9 +71,9 @@
     },
       el('h1', { class: 'auth-title' }, `Welcome${me.user.first_name ? ', ' + me.user.first_name : ''}!`),
       el('p', { class: 'auth-sub' }, 'For your security, please replace the temporary password from your welcome email with one only you know.'),
-      el('label', { class: 'field' }, el('span', null, 'Temporary password'), current),
-      el('label', { class: 'field' }, el('span', null, 'New password'), password),
-      el('label', { class: 'field' }, el('span', null, 'Confirm new password'), confirm),
+      el('label', { class: 'field' }, el('span', null, 'Temporary password'), withReveal(current)),
+      el('label', { class: 'field' }, el('span', null, 'New password'), withReveal(password)),
+      el('label', { class: 'field' }, el('span', null, 'Confirm new password'), withReveal(confirm)),
       el('p', { class: 'faint' }, `Use at least ${minLength} characters, with at least one letter and one number. Avoid your own name or email.`),
       errorLine(),
       submit
@@ -107,7 +107,7 @@
       el('h1', { class: 'auth-title' }, 'Welcome back'),
       el('p', { class: 'auth-sub' }, 'Sign in to your portal'),
       el('label', { class: 'field' }, el('span', null, 'Email'), email),
-      el('label', { class: 'field' }, el('span', null, 'Password'), password),
+      el('label', { class: 'field' }, el('span', null, 'Password'), withReveal(password)),
       errorLine(),
       submit,
       el('p', { class: 'small', style: 'text-align:center;margin-top:14px' },
@@ -197,8 +197,8 @@
       el('p', { class: 'auth-sub' }, kind === 'activate'
         ? 'Choose a password to activate your secure portal account.'
         : `Setting a new password for ${info.email}.`),
-      el('label', { class: 'field' }, el('span', null, 'New password'), password),
-      el('label', { class: 'field' }, el('span', null, 'Confirm password'), confirm),
+      el('label', { class: 'field' }, el('span', null, 'New password'), withReveal(password)),
+      el('label', { class: 'field' }, el('span', null, 'Confirm password'), withReveal(confirm)),
       el('p', { class: 'faint' }, `Use at least ${minLength} characters, with at least one letter and one number. Avoid your own name or email.`),
       errorLine(),
       submit
@@ -427,8 +427,8 @@
       el('div', { class: 'form-row cols-2' },
         el('label', { class: 'field' }, el('span', null, 'First name'), first),
         el('label', { class: 'field' }, el('span', null, 'Last name'), last)),
-      el('label', { class: 'field' }, el('span', null, 'Choose a password'), password),
-      el('label', { class: 'field' }, el('span', null, 'Confirm password'), confirm),
+      el('label', { class: 'field' }, el('span', null, 'Choose a password'), withReveal(password)),
+      el('label', { class: 'field' }, el('span', null, 'Confirm password'), withReveal(confirm)),
       errorLine(),
       submit);
 

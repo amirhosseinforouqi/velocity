@@ -2,39 +2,81 @@
 
 /* Broker portal — Settings views. Uses shared BK state from broker-file.js. */
 
-const SETTINGS_SECTIONS = [
-  ['branding', 'Branding'],
-  ['stages', 'Stages'],
-  ['types', 'Client services'],
-  ['employment', 'Employment statuses'],
-  ['doctypes', 'Document catalog'],
-  ['rules', 'Document rules'],
-  ['templates', 'Email templates'],
-  ['qualification', 'Qualification policy'],
-  ['automation', 'Reminders & automation'],
-  ['team', 'Team & permissions'],
-  ['consents', 'Consent forms'],
-  ['integrations', 'Integrations'],
+/**
+ * Settings, grouped by what they are about.
+ *
+ * A flat list of twelve entries made "where do I change the reminder wording"
+ * a hunt. Each section also declares the permission it needs, so the nav
+ * shows what this person can actually open instead of a wall of links that
+ * refuse them — an assistant sees only their own account.
+ */
+const SETTINGS_GROUPS = [
+  {
+    label: 'Your account',
+    sections: [['account', 'My account', null]],
+  },
+  {
+    label: 'Brokerage',
+    sections: [
+      ['branding', 'Branding', 'settings.manage'],
+      ['team', 'Team & permissions', 'users.manage'],
+      ['integrations', 'Integrations', 'settings.manage'],
+    ],
+  },
+  {
+    label: 'Client intake',
+    sections: [
+      ['types', 'Client services', 'settings.manage'],
+      ['employment', 'Employment statuses', 'settings.manage'],
+      ['doctypes', 'Document catalog', 'settings.manage'],
+      ['rules', 'Document rules', 'settings.manage'],
+    ],
+  },
+  {
+    label: 'Workflow',
+    sections: [
+      ['stages', 'Stages', 'settings.manage'],
+      ['automation', 'Reminders & automation', 'settings.manage'],
+      ['qualification', 'Qualification policy', 'settings.manage'],
+    ],
+  },
+  {
+    label: 'Client communication',
+    sections: [
+      ['templates', 'Email templates', 'settings.manage'],
+      ['consents', 'Consent forms', 'settings.manage'],
+    ],
+  },
 ];
 
+/** The groups this user can open, with sections they cannot use removed. */
+function visibleSettingsGroups() {
+  return SETTINGS_GROUPS
+    .map((g) => ({ ...g, sections: g.sections.filter(([, , perm]) => !perm || can(perm)) }))
+    .filter((g) => g.sections.length > 0);
+}
+
 async function renderSettings(section) {
-  section = section || 'branding';
+  const groups = visibleSettingsGroups();
+  const available = groups.flatMap((g) => g.sections.map(([key]) => key));
+  if (!section || !available.includes(section)) section = available[0];
+
   const view = document.getElementById('view');
   clearNode(view);
 
-  if (!can('settings.manage') && !can('users.manage')) {
-    view.append(el('div', { class: 'card empty' },
-      el('div', { class: 'big' }, '🔒'),
-      el('p', null, 'Settings are managed by your brokerage administrator.')));
-    return;
-  }
-
-  const nav = el('div', { class: 'settings-nav' }, SETTINGS_SECTIONS.map(([key, label]) =>
-    el('button', { class: key === section ? 'active' : '', onclick: () => { window.location.hash = `#/settings/${key}`; } }, label)));
+  const nav = el('div', { class: 'settings-nav' }, groups.map((g) =>
+    el('div', { class: 'settings-nav-group' },
+      el('div', { class: 'settings-nav-title' }, g.label),
+      g.sections.map(([key, label]) =>
+        el('button', {
+          class: key === section ? 'active' : '',
+          onclick: () => { window.location.hash = `#/settings/${key}`; },
+        }, label)))));
   const bodyEl = el('div');
   view.append(el('h1', null, 'Settings'), el('div', { class: 'settings-grid' }, nav, bodyEl));
 
   const renderers = {
+    account: renderAccountSettings,
     branding: renderBrandingSettings, stages: renderStageSettings, types: renderTypeSettings,
     employment: renderEmploymentSettings, doctypes: renderDocTypeSettings,
     rules: renderRuleSettings, templates: renderTemplateSettings,
@@ -42,7 +84,68 @@ async function renderSettings(section) {
     automation: renderAutomationSettings, team: renderTeamSettings, consents: renderConsentSettings,
     integrations: renderIntegrationsSettings,
   };
-  await (renderers[section] || renderBrandingSettings)(bodyEl);
+  await (renderers[section] || renderAccountSettings)(bodyEl);
+}
+
+// ------------------------------------------------------------------ my account
+
+/**
+ * The one settings page every staff member can reach, whatever their role.
+ *
+ * Before this, an assistant had no way to change their own password: the
+ * whole Settings area required settings.manage, so the only route to a new
+ * password was asking an administrator to reset it for them.
+ */
+async function renderAccountSettings(body) {
+  const me = BK.me.user;
+  const current = passwordInput('Your current password');
+  const next = passwordInput('At least 12 characters');
+  const confirm = passwordInput('Repeat your new password');
+  const error = el('p', { class: 'form-error' });
+
+  const save = el('button', { class: 'btn' }, 'Change my password');
+  save.addEventListener('click', async () => {
+    error.textContent = '';
+    if (next.value !== confirm.value) {
+      error.textContent = 'The two new passwords do not match.';
+      return;
+    }
+    save.disabled = true;
+    try {
+      await api.post('/api/auth/change-password', {
+        current_password: current.value, new_password: next.value,
+      });
+      current.value = next.value = confirm.value = '';
+      toast('Password changed. Your other sessions have been signed out.', 'good');
+    } catch (err) { error.textContent = err.message; }
+    save.disabled = false;
+  });
+
+  body.append(
+    el('div', { class: 'card' },
+      el('h3', null, 'My account'),
+      el('div', { class: 'form-row cols-2' },
+        el('label', { class: 'field' }, el('span', null, 'Name'),
+          el('input', { type: 'text', value: `${me.first_name} ${me.last_name}`.trim(), disabled: '' })),
+        el('label', { class: 'field' }, el('span', null, 'Email'),
+          el('input', { type: 'text', value: me.email, disabled: '' }))),
+      el('p', { class: 'faint' }, `You are signed in as ${me.role}. Ask an administrator to change your name, email or role.`)),
+    el('div', { class: 'card' },
+      el('h3', null, 'Password'),
+      el('p', { class: 'muted small' }, 'Changing your password signs out every other device you are signed in on.'),
+      el('label', { class: 'field' }, el('span', null, 'Current password'), withReveal(current)),
+      el('div', { class: 'form-row cols-2' },
+        el('label', { class: 'field' }, el('span', null, 'New password'), withReveal(next)),
+        el('label', { class: 'field' }, el('span', null, 'Confirm new password'), withReveal(confirm))),
+      error,
+      save),
+    el('div', { class: 'card' },
+      el('h3', null, 'Two-step verification'),
+      BK.me.mfa && BK.me.mfa.enrolled
+        ? el('p', { class: 'muted' }, 'Your authenticator app is set up. If you lose your phone, an administrator can reset it for you.')
+        : el('div', null,
+            el('p', { class: 'muted' }, 'Not set up yet.'),
+            el('a', { class: 'btn sm', href: '/mfa-setup' }, 'Set up two-step verification'))));
 }
 
 async function reloadMeta() {
@@ -714,15 +817,34 @@ async function renderTeamSettings(body) {
         el('td', null, u.email),
         el('td', null, roleSelect(u)),
         el('td', null, el('span', { class: `pill ${u.status === 'active' ? 'good' : u.status === 'disabled' ? 'bad' : 'warn'}` }, u.status)),
-        el('td', null, u.id !== BK.me.user.id ? el('button', {
-          class: 'btn sm secondary',
-          onclick: async () => {
-            const next = u.status === 'disabled' ? 'active' : 'disabled';
-            if (!(await confirmDialog(`${next === 'disabled' ? 'Disable' : 'Re-enable'} ${u.first_name}'s account?`))) return;
-            await api.patch(`/api/settings/users/${u.id}`, { status: next });
-            renderSettings('team');
-          },
-        }, u.status === 'disabled' ? 'Enable' : 'Disable') : el('span', { class: 'faint' }, 'You'))))))));
+        el('td', null, u.id !== BK.me.user.id ? el('div', { class: 'row' },
+          el('button', {
+            class: 'btn sm secondary',
+            onclick: async () => {
+              const next = u.status === 'disabled' ? 'active' : 'disabled';
+              if (!(await confirmDialog(`${next === 'disabled' ? 'Disable' : 'Re-enable'} ${u.first_name}'s account?`))) return;
+              try {
+                await api.patch(`/api/settings/users/${u.id}`, { status: next });
+                renderSettings('team');
+              } catch (err) { toast(err.message, 'bad'); }
+            },
+          }, u.status === 'disabled' ? 'Enable' : 'Disable'),
+          el('button', {
+            class: 'btn sm secondary', style: 'color:var(--bad)',
+            onclick: async () => {
+              const ok = await confirmDialog(
+                `Permanently delete ${u.first_name} ${u.last_name} (${u.email})? This cannot be undone. ` +
+                'If they have worked on any client files, disable them instead — that ends their access now and keeps the record.',
+                { danger: true, confirmLabel: 'Delete account' }
+              );
+              if (!ok) return;
+              try {
+                await api.del(`/api/settings/users/${u.id}`);
+                toast('Account deleted.', 'good');
+                renderSettings('team');
+              } catch (err) { toast(err.message, 'bad'); }
+            },
+          }, 'Delete')) : el('span', { class: 'faint' }, 'You'))))))));
 
   if (can('settings.manage')) body.append(await permissionMatrix());
 

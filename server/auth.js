@@ -348,11 +348,26 @@ async function completeLogin(user, ip, userAgent) {
 
 const STAFF_ROLES = ['admin', 'manager', 'broker', 'processor', 'assistant'];
 
+/**
+ * Permissions the administrator role can never lose.
+ *
+ * The settings validator refuses a save that would drop these, but that only
+ * guards writes made through the API — a hand-edited settings row, a restored
+ * backup from an older schema, or a permission key renamed in code all leave
+ * a stored map that no longer grants them. The result is a brokerage locked
+ * out of its own configuration with no way back in through the product, so
+ * the floor is enforced here, on every read, rather than only at write time.
+ */
+const ADMIN_FLOOR = ['settings.manage', 'users.manage'];
+
 async function permissionsForRole(role) {
   if (role === 'client') return [];
   const map = await getSetting('role_permissions', {});
   const { DEFAULT_ROLE_PERMISSIONS } = require('./seed');
-  return map[role] || DEFAULT_ROLE_PERMISSIONS[role] || [];
+  const granted = map[role] || DEFAULT_ROLE_PERMISSIONS[role] || [];
+  if (role !== 'admin') return granted;
+  const missing = ADMIN_FLOOR.filter((p) => !granted.includes(p));
+  return missing.length ? [...granted, ...missing] : granted;
 }
 
 async function hasPermission(user, permission) {

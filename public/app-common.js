@@ -89,6 +89,61 @@ function fmtMoney(n) {
   return new Intl.NumberFormat('en-CA', { style: 'currency', currency: 'CAD', maximumFractionDigits: 0 }).format(n);
 }
 
+/** A password input. Pair it with withReveal() to give it a show/hide eye. */
+function passwordInput(placeholder, attrs) {
+  return el('input', { type: 'password', placeholder: placeholder || '', ...(attrs || {}) });
+}
+
+/**
+ * Wrap a password input with a show/hide toggle.
+ *
+ * Typing a long generated password blind is where sign-in attempts are
+ * actually lost, so the eye is worth the small exposure — it starts hidden,
+ * every reveal is deliberate, and the state is never persisted.
+ */
+function withReveal(input) {
+  const EYE = 'M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z';
+  const icon = () => {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('width', '18');
+    svg.setAttribute('height', '18');
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', '2');
+    svg.setAttribute('stroke-linecap', 'round');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', EYE);
+    const pupil = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    pupil.setAttribute('cx', '12'); pupil.setAttribute('cy', '12'); pupil.setAttribute('r', '3');
+    svg.append(path, pupil);
+    if (input.type === 'text') {
+      // A slash through the eye for the revealed state.
+      const slash = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      slash.setAttribute('x1', '3'); slash.setAttribute('y1', '21');
+      slash.setAttribute('x2', '21'); slash.setAttribute('y2', '3');
+      svg.append(slash);
+    }
+    return svg;
+  };
+
+  const button = el('button', {
+    type: 'button', class: 'pw-reveal', tabindex: '-1',
+    'aria-label': 'Show password', title: 'Show password',
+  });
+  button.append(icon());
+  button.addEventListener('click', () => {
+    const shown = input.type === 'text';
+    input.type = shown ? 'password' : 'text';
+    button.setAttribute('aria-label', shown ? 'Show password' : 'Hide password');
+    button.title = shown ? 'Show password' : 'Hide password';
+    clearNode(button);
+    button.append(icon());
+    input.focus();
+  });
+  return el('div', { class: 'pw-wrap' }, input, button);
+}
+
 /**
  * A text input that keeps thousand separators in view while you type.
  *

@@ -200,6 +200,17 @@ input::placeholder, textarea::placeholder { color: var(--ink-faint); }
   outline-color: var(--bad);
 }
 .field.invalid > span { color: var(--bad); }
+.pw-wrap { position: relative; display: block; }
+.pw-wrap > input { width: 100%; padding-right: 42px; }
+.pw-reveal {
+  position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  display: flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; padding: 0;
+  border: 0; border-radius: var(--r2); background: none; cursor: pointer;
+  color: var(--ink-faint);
+}
+.pw-reveal:hover { color: var(--ink); background: var(--bg); }
+
 .hint { color: var(--ink-faint); font-size: 0.79rem; margin-top: -8px; margin-bottom: var(--s3); }
 
 /* Money and rate inputs read right-aligned in the monospace face, so a

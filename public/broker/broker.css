@@ -299,6 +299,12 @@
 }
 .settings-nav button:hover { background: var(--bg-sunken); color: var(--ink); }
 .settings-nav button.active { background: var(--brand-soft); color: var(--brand-dark); }
+.settings-nav-group { display: flex; flex-direction: column; gap: 1px; }
+.settings-nav-group + .settings-nav-group { margin-top: 14px; }
+.settings-nav-title {
+  font-size: 0.7rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--ink-faint); padding: 0 12px 4px;
+}
 
 .chat-panel { height: 480px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
 
@@ -332,8 +338,14 @@
   .menu-btn { display: inline-flex; }
   .content { padding: 14px 13px 84px; }
   .settings-grid { grid-template-columns: 1fr; }
+  /* On a phone the nav becomes one scrolling strip; the group titles would
+     each force a line break, so they step aside and the sections read as a
+     single row of tabs. */
   .settings-nav { flex-direction: row; overflow-x: auto; position: static; padding-bottom: 4px; }
   .settings-nav button { white-space: nowrap; }
+  .settings-nav-group { flex-direction: row; }
+  .settings-nav-group + .settings-nav-group { margin-top: 0; margin-left: 10px; }
+  .settings-nav-title { display: none; }
   #new-client-btn { display: none; }
   .search-wrap { width: auto; flex: 1; }
 

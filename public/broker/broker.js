@@ -50,12 +50,12 @@ async function boot() {
   document.getElementById('notif-btn').addEventListener('click', () => { window.location.hash = '#/notifications'; });
   // Navigation only offers what this role can actually reach. A destination
   // that answers with a permission error is worse than one that is not there.
-  if (!can('settings.manage') && !can('users.manage')) {
-    document.getElementById('nav-settings').classList.add('hidden');
-  }
+  // Settings always stays: every staff member has an account page there,
+  // whatever else their role can reach.
   if (!can('lenders.view')) document.getElementById('nav-lenders').classList.add('hidden');
   if (!can('reports.view')) document.getElementById('nav-reports').classList.add('hidden');
   if (!can('settings.manage')) document.getElementById('nav-automation').classList.add('hidden');
+  hideEmptyNavGroups();
   if (!can('clients.create')) {
     document.getElementById('new-client-btn').classList.add('hidden');
     const mobileNew = document.querySelector('.bottom-nav a[data-nav="new"]');
@@ -129,6 +129,33 @@ function setView(...nodes) {
  * each extra type is permission-checked server-side — finding a note you are
  * not allowed to read is still reading it.
  */
+/**
+ * Drop a sidebar heading whose links were all hidden.
+ *
+ * Hiding the links alone left an assistant looking at "Rates & insight" and
+ * "Brokerage" headings with nothing under them, which reads as a broken page
+ * rather than a smaller one.
+ */
+function hideEmptyNavGroups() {
+  const nav = document.querySelector('.side-nav');
+  if (!nav) return;
+  let heading = null;
+  let visibleUnderHeading = 0;
+  const close = () => {
+    if (heading && visibleUnderHeading === 0) heading.classList.add('hidden');
+  };
+  for (const node of nav.children) {
+    if (node.classList.contains('group')) {
+      close();
+      heading = node;
+      visibleUnderHeading = 0;
+    } else if (node.tagName === 'A' && !node.classList.contains('hidden')) {
+      visibleUnderHeading += 1;
+    }
+  }
+  close();
+}
+
 function setupGlobalSearch() {
   const input = document.getElementById('global-search');
   const results = document.getElementById('search-results');

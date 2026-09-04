@@ -633,6 +633,67 @@ function register(router) {
   });
 
   /**
+   * Permanently remove a staff account.
+   *
+   * Disabling is the normal way to remove someone: it ends their access
+   * immediately and leaves the record of what they did intact. Deletion
+   * exists for the other case — an invitation sent to the wrong address, a
+   * duplicate row, someone who never started — where leaving a disabled
+   * account behind is just clutter.
+   *
+   * So it only deletes an account that holds no work. A staff member who was
+   * assigned a file, sent a client a message, or wrote a note is refused with
+   * the reason, because deleting them would either break those records or
+   * silently reattribute them. The audit trail keeps their user id either way:
+   * audit_log has no foreign key precisely so history outlives the account.
+   */
+  router.delete('/api/settings/users/:id', manageUsers, async (ctx) => {
+    const user = await get("SELECT * FROM users WHERE id = ? AND role != 'client'", idParam(ctx.params.id));
+    if (!user) throw new ApiError(404, 'User not found.', 'not_found');
+    if (user.id === ctx.user.id) {
+      throw new ApiError(400, 'You cannot delete your own account.', 'self_change');
+    }
+    if (user.role === 'admin') {
+      const others = await get(
+        "SELECT COUNT(*)::int AS n FROM users WHERE role = 'admin' AND status = 'active' AND id <> ?",
+        user.id
+      );
+      if (others.n === 0) {
+        throw new ApiError(400, 'This is the last active administrator. Promote someone else first.', 'last_admin');
+      }
+    }
+
+    const held = [];
+    const counts = [
+      ['client files', 'SELECT COUNT(*)::int AS n FROM client_files WHERE assigned_broker_id = ? OR created_by = ?'],
+      ['client messages', 'SELECT COUNT(*)::int AS n FROM messages WHERE sender_id = ?'],
+      ['tasks', 'SELECT COUNT(*)::int AS n FROM tasks WHERE assigned_to = ?'],
+      ['notes', 'SELECT COUNT(*)::int AS n FROM notes WHERE created_by = ?'],
+    ];
+    for (const [label, sql] of counts) {
+      // Every one of these columns is a foreign key without a cascade, so an
+      // unchecked delete would fail at the database rather than here.
+      const row = await get(sql, ...Array(sql.split('?').length - 1).fill(user.id));
+      if (row && row.n > 0) held.push(`${row.n} ${label}`);
+    }
+    if (held.length) {
+      throw new ApiError(
+        409,
+        `${user.first_name || user.email} still has ${held.join(', ')} on their account. Disable them instead — that ends their access now and keeps the record of their work.`,
+        'account_in_use'
+      );
+    }
+
+    await destroyAllSessions(user.id);
+    await run('DELETE FROM users WHERE id = ?', user.id);
+    // Written after the delete so the row records an account that is gone,
+    // and with the details needed to know who it was.
+    await audit(ctx.user.id, 'staff_account_deleted', 'user', user.id, ctx.ip,
+      { email: user.email, role: user.role, name: `${user.first_name} ${user.last_name}`.trim() });
+    return { ok: true };
+  });
+
+  /**
    * Clear a staff member's second factor after a lost phone.
    *
    * Deliberately an administrator action rather than a self-service reset:
